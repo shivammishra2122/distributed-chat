@@ -1,0 +1,19 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+
+# Image Downloads (keep directory but ignore content?)
+downloads/*
+!downloads/.gitkeep
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
