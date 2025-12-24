@@ -21,6 +21,8 @@ const (
 	MsgTypeLogin
 	MsgTypeAuthResult
 	MsgTypeImage
+	MsgTypeRegister // New: Registration
+	MsgTypeUserSync // New: Exchange active user lists
 )
 
 // Message represents the data structure exchanged between clients and nodes
@@ -37,7 +39,24 @@ func SendMessage(w io.Writer, msg Message) error {
 	return encoder.Encode(msg)
 }
 
-// ReadMessage reads a JSON-encoded message from the reader
+// Decoder wraps json.Decoder to preserve buffering
+type Decoder struct {
+	dec *json.Decoder
+}
+
+func NewDecoder(r io.Reader) *Decoder {
+	return &Decoder{dec: json.NewDecoder(r)}
+}
+
+func (d *Decoder) Decode() (*Message, error) {
+	var msg Message
+	if err := d.dec.Decode(&msg); err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+// Deprecated: Use NewDecoder instead to avoid buffer loss
 func ReadMessage(r io.Reader) (*Message, error) {
 	var msg Message
 	decoder := json.NewDecoder(r)

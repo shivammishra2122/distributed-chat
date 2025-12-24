@@ -2,3 +2,90 @@
 {"type":0,"sender":"Bob","content":"hi ","timestamp":"2025-12-23T18:09:05.931396+05:30"}
 {"type":0,"sender":"Alice","content":"how are you ","timestamp":"2025-12-23T18:09:19.401879+05:30"}
 {"type":0,"sender":"Bob","content":"good ","timestamp":"2025-12-23T18:09:25.500494+05:30"}
+{"type":0,"sender":"Bob","content":"hello","timestamp":"2025-12-24T17:46:13.003484+05:30"}
+{"type":0,"sender":"Alice","content":"how are you ","timestamp":"2025-12-24T17:46:21.536826+05:30"}
+{"type":0,"sender":"Alice","content":"kaisa hai bhai ","timestamp":"2025-12-24T17:46:58.557597+05:30"}
+{"type":0,"sender":"Bob","content":"badiya bhai ","timestamp":"2025-12-24T17:47:06.128298+05:30"}
+{"type":0,"sender":"Alice","content":"kkrh ","timestamp":"2025-12-24T17:47:17.261258+05:30"}
+{"type":0,"sender":"Bob","content":"hey ","timestamp":"2025-12-24T17:47:26.842179+05:30"}
+{"type":0,"sender":"Alice","content":"gurfgluwgluf","timestamp":"2025-12-24T17:52:48.737326+05:30"}
+{"type":0,"sender":"Alice","content":"hsvdyggluegfl ","timestamp":"2025-12-24T17:53:15.57676+05:30"}
+{"type":0,"sender":"Alice","content":"jrgfu g;eri","timestamp":"2025-12-24T17:53:16.479456+05:30"}
+{"type":0,"sender":"Alice","content":"hvs gf","timestamp":"2025-12-24T17:53:17.398492+05:30"}
+{"type":0,"sender":"Alice","content":"hvshdf uasugfq","timestamp":"2025-12-24T17:53:19.609943+05:30"}
+{"type":0,"sender":"Alice","content":"hsg dih ;erog","timestamp":"2025-12-24T17:53:20.814626+05:30"}
+{"type":0,"sender":"Bob","content":"guewrqt","timestamp":"2025-12-24T17:53:39.01739+05:30"}
+{"type":0,"sender":"Alice","content":"saph iufeh","timestamp":"2025-12-24T17:53:51.146257+05:30"}
+{"type":0,"sender":"Alice","content":"aksdfo","timestamp":"2025-12-24T17:53:52.211081+05:30"}
+{"type":0,"sender":"Alice","content":"ashflouq gw;rfioe hcq;oqw","timestamp":"2025-12-24T17:53:54.07188+05:30"}
+{"type":0,"sender":"Alice","content":"qwroiuytrejhgfdsg7ergfoi ewifuaxfoefx qwetr xqwet","timestamp":"2025-12-24T17:53:58.414975+05:30"}
+{"type":0,"sender":"Alice","content":"bla bla bla","timestamp":"2025-12-24T17:56:47.445622+05:30"}
+{"type":0,"sender":"Alice","content":"aysefgi gal","timestamp":"2025-12-24T17:57:35.100617+05:30"}
+{"type":0,"sender":"Alice","content":"asdguagsdl","timestamp":"2025-12-24T17:57:36.2612+05:30"}
+{"type":0,"sender":"Alice","content":"ausdgfkyashjfvaf","timestamp":"2025-12-24T17:57:37.543771+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T17:57:50.142043+05:30"}
+{"type":0,"sender":"Bob","content":"qywgefiu","timestamp":"2025-12-24T17:58:38.424362+05:30"}
+{"type":0,"sender":"Bob","content":"jageufgva","timestamp":"2025-12-24T17:58:39.427724+05:30"}
+{"type":0,"sender":"Bob","content":"]ahjsgfubaskljdf","timestamp":"2025-12-24T17:58:40.445718+05:30"}
+{"type":0,"sender":"Bob","content":"khagsdkvlausf","timestamp":"2025-12-24T17:58:41.507576+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:02:41.157169+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:02:52.482502+05:30"}
+{"type":0,"sender":"Bob","content":"avsjdf","timestamp":"2025-12-24T19:03:38.561953+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:03:51.034289+05:30"}
+{"type":0,"sender":"Alice","content":"where are you bob ","timestamp":"2025-12-24T19:04:06.970487+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:04:13.432956+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:04:52.596072+05:30"}
+{"type":0,"sender":"Alice","content":"ahsfekfy","timestamp":"2025-12-24T19:04:54.291125+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:05:00.046215+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:05:00.04729+05:30"}
+{"type":0,"sender":"Alice","content":"/ctive","timestamp":"2025-12-24T19:05:41.058967+05:30"}
+{"type":0,"sender":"Alice","content":"/Active","timestamp":"2025-12-24T19:05:47.032787+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:07:07.642952+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:07:07.643554+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:07:18.133458+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:07:18.134013+05:30"}
+{"type":2,"sender":"Server","content":"*** Alice has left the chat ***\u0007","timestamp":"2025-12-24T19:08:40.280415+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:09:20.021989+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:09:29.216165+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:09:29.217222+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:12:39.962365+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:12:59.155509+05:30"}
+{"type":0,"sender":"Bob","content":"hello","timestamp":"2025-12-24T19:13:06.694471+05:30"}
+{"type":2,"sender":"Server","content":"*** Alice has left the chat ***\u0007","timestamp":"2025-12-24T19:16:39.064888+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:16:41.614015+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2025-12-24T19:17:45.447952+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:17:56.277581+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2025-12-24T19:19:07.890227+05:30"}
+{"type":2,"sender":"Server","content":"*** Alice has left the chat ***\u0007","timestamp":"2025-12-24T19:19:11.693143+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:34:31.311297+05:30"}
+{"type":0,"sender":"Alice","content":"clear","timestamp":"2025-12-24T19:34:43.92692+05:30"}
+{"type":0,"sender":"Alice","content":"/clear","timestamp":"2025-12-24T19:36:18.505048+05:30"}
+{"type":0,"sender":"Alice","content":"ag /clear","timestamp":"2025-12-24T19:36:30.352547+05:30"}
+{"type":0,"sender":"Alice","content":"./bin/client -server localhost:8080 -user Alice -pass secret","timestamp":"2025-12-24T19:37:34.935184+05:30"}
+{"type":2,"sender":"Server","content":"*** Alice has left the chat ***\u0007","timestamp":"2025-12-24T19:37:39.149685+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:37:42.529171+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:55.597225+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:55.773519+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:55.958526+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:56.134949+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:56.527834+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:56.703293+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:56.875536+05:30"}
+{"type":0,"sender":"Alice","content":"","timestamp":"2025-12-24T19:37:57.024001+05:30"}
+{"type":2,"sender":"Server","content":"*** Alice has left the chat ***\u0007","timestamp":"2025-12-24T19:38:30.191883+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:40:41.609863+05:30"}
+{"type":0,"sender":"Alice","content":"vasydvf","timestamp":"2025-12-24T19:40:55.049119+05:30"}
+{"type":0,"sender":"Alice","content":"ansdv","timestamp":"2025-12-24T19:40:56.032344+05:30"}
+{"type":0,"sender":"Alice","content":"asdhjkbashjdfvashdv,qshdcvqhvwe.dcqdv","timestamp":"2025-12-24T19:41:09.448901+05:30"}
+{"type":1,"sender":"Server","content":"*** Dave has joined the chat ***\u0007","timestamp":"2025-12-24T19:44:06.751174+05:30"}
+{"type":0,"sender":"Dave","content":"ayfefqwef\\","timestamp":"2025-12-24T19:44:20.836551+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:44:30.810168+05:30"}
+{"type":1,"sender":"Server","content":"*** sarang has joined the chat ***\u0007","timestamp":"2025-12-24T19:45:40.32399+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T19:45:58.315842+05:30"}
+{"type":1,"sender":"Server","content":"*** Sap has joined the chat ***\u0007","timestamp":"2025-12-24T19:47:25.066977+05:30"}
+{"type":1,"sender":"Server","content":"*** Yuvraj has joined the chat ***\u0007","timestamp":"2025-12-24T20:09:44.072843+05:30"}
+{"type":0,"sender":"Yuvraj","content":"hey i am yuvraj ","timestamp":"2025-12-24T20:09:58.389424+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2025-12-24T20:10:09.495983+05:30"}
+{"type":0,"sender":"Alice","content":"hello ","timestamp":"2025-12-24T20:10:23.207063+05:30"}
+{"type":0,"sender":"Yuvraj","content":"hi ","timestamp":"2025-12-24T21:26:35.66455+05:30"}
+{"type":0,"sender":"Alice","content":"whtsa blfr","timestamp":"2025-12-24T21:26:46.744445+05:30"}

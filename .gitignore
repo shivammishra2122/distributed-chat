@@ -7,13 +7,12 @@ bin/
 
 # Logs
 *.log
+users.json
 
-# Image Downloads (keep directory but ignore content?)
-downloads/*
-!downloads/.gitkeep
-
-# Editor/IDE
+# IDE
 .vscode/
 .idea/
 *.swp
+
+# OS
 .DS_Store

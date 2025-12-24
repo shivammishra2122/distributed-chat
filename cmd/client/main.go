@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ func main() {
 	serverAddr := flag.String("server", "localhost:8080", "Server address to connect to")
 	username := flag.String("user", "User", "Username for chat")
 	password := flag.String("pass", "", "Password for authentication")
+	register := flag.Bool("register", false, "Register a new user")
 	secretKey := flag.String("key", "", "Secret key for E2EE (optional)")
 	flag.Parse()
 
@@ -30,7 +32,35 @@ func main() {
 	defer conn.Close()
 	fmt.Printf("Connected to server at %s as %s\n", *serverAddr, *username)
 
-	// Start a goroutine to read messages from the server
+	// Create a persistent decoder for this connection
+	decoder := protocol.NewDecoder(conn)
+
+	if *register {
+		// Perform Registration
+		regMsg := protocol.Message{
+			Type:      protocol.MsgTypeRegister,
+			Sender:    *username,
+			Content:   fmt.Sprintf("%s:%s", *username, *password),
+			Timestamp: time.Now(),
+		}
+		if err := protocol.SendMessage(conn, regMsg); err != nil {
+			log.Fatalf("Failed to send registration: %v", err)
+		}
+
+		fmt.Println("Attempting registration...")
+		res, err := decoder.Decode()
+		if err != nil {
+			log.Fatalf("Failed to read registration response: %v", err)
+		}
+
+		if res.Content == "OK_REGISTERED" {
+			fmt.Println("Registration Successful! Please restart without -register to login.")
+		} else {
+			fmt.Printf("Registration Failed: %s\n", res.Content)
+		}
+		return
+	}
+
 	// Perform Login
 	loginMsg := protocol.Message{
 		Type:      protocol.MsgTypeLogin,
@@ -43,7 +73,7 @@ func main() {
 	}
 
 	// Wait for Auth Result
-	authRes, err := protocol.ReadMessage(conn)
+	authRes, err := decoder.Decode()
 	if err != nil {
 		log.Fatalf("Failed to read auth result: %v", err)
 	}
@@ -58,7 +88,7 @@ func main() {
 
 	go func() {
 		for {
-			msg, err := protocol.ReadMessage(conn)
+			msg, err := decoder.Decode()
 			if err != nil {
 				log.Printf("Disconnected from server: %v", err)
 				os.Exit(0)
@@ -121,6 +151,13 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		text := scanner.Text()
+
+		if strings.TrimSpace(text) == "/clear" {
+			cmd := exec.Command("clear")
+			cmd.Stdout = os.Stdout
+			cmd.Run()
+			continue
+		}
 
 		// Check for commands
 		if strings.HasPrefix(text, "/image ") {

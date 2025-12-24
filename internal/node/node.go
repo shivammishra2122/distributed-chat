@@ -11,23 +11,30 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gliderlabs/ssh"
 )
 
+type ClientRegistration struct {
+	Conn net.Conn
+	User string
+}
+
 type Node struct {
-	port       int
-	clients    map[net.Conn]bool
-	peers      map[net.Conn]time.Time // Track last seen time
-	peerIDs    map[net.Conn]int       // Add tracking of Peer Ports (IDs)
-	storage    *storage.Storage
-	auth       *auth.Authenticator // Auth module
-	broadcast  chan protocol.Message
-	register   chan net.Conn
-	unregister chan net.Conn
-	mu         sync.Mutex
+	port        int
+	clients     map[net.Conn]string    // map[conn]username
+	remoteUsers map[string]bool        // Set of usernames on other nodes
+	peers       map[net.Conn]time.Time // Track last seen time
+	peerIDs     map[net.Conn]int       // Add tracking of Peer Ports (IDs)
+	storage     *storage.Storage
+	auth        *auth.Authenticator // Auth module
+	broadcast   chan protocol.Message
+	register    chan ClientRegistration
+	unregister  chan net.Conn
+	mu          sync.Mutex
 
 	// Election State
 	isLeader bool
@@ -48,17 +55,18 @@ func NewNode(port int) *Node {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	return &Node{
-		port:       port,
-		clients:    make(map[net.Conn]bool),
-		peers:      make(map[net.Conn]time.Time),
-		peerIDs:    make(map[net.Conn]int),
-		storage:    store,
-		auth:       auth.NewAuthenticator(),
-		broadcast:  make(chan protocol.Message),
-		register:   make(chan net.Conn),
-		unregister: make(chan net.Conn),
-		isLeader:   false,
-		leaderID:   0,
+		port:        port,
+		clients:     make(map[net.Conn]string),
+		remoteUsers: make(map[string]bool),
+		peers:       make(map[net.Conn]time.Time),
+		peerIDs:     make(map[net.Conn]int),
+		storage:     store,
+		auth:        auth.NewAuthenticator(),
+		broadcast:   make(chan protocol.Message),
+		register:    make(chan ClientRegistration),
+		unregister:  make(chan net.Conn),
+		isLeader:    false,
+		leaderID:    0,
 	}
 }
 
@@ -94,7 +102,9 @@ func (n *Node) Join(peerAddrs []string) {
 			// This logic handles SENDING.
 			// Receiving logic tracks `n.peerIDs`.
 			n.mu.Unlock()
-			go n.handlePeerMessage(conn)
+			// We need to pass the decoder to handlePeerMessage
+			decoder := protocol.NewDecoder(conn)
+			go n.handlePeerMessage(conn, decoder)
 		}(addr)
 	}
 }
@@ -166,13 +176,15 @@ func (n *Node) JoinSSH(s ssh.Session) {
 	// Since SSH is already authenticated by the Server's PasswordHandler,
 	// we bypass the TCP Login Handshake and register directly.
 
-	n.register <- adapter
+	n.register <- ClientRegistration{Conn: adapter, User: s.User()}
 
 	// Write a welcome message to the user?
 	adapter.Session.Write([]byte("Welcome to Distributed Chat! (SSH Mode)\r\nType your messages below.\r\n"))
 
 	// Enter the client loop (blocks until session ends)
-	n.handleClientLoop(adapter)
+	// SSH Adapter is a ReadWriter, so we can make a decoder for it.
+	decoder := protocol.NewDecoder(adapter)
+	n.handleClientLoop(adapter, decoder)
 }
 
 func NewSSHAdapter(s ssh.Session, key string) *SSHAdapterPipe {
@@ -204,19 +216,16 @@ func (a *SSHAdapterPipe) Write(b []byte) (int, error) {
 	}
 
 	// Format for SSH Terminal (Skip internal messages if needed)
-	if msg.Type != protocol.MsgTypeChat && msg.Type != protocol.MsgTypeImage {
-		return len(b), nil // Swallow non-chat messages for SSH users
+	if msg.Type != protocol.MsgTypeChat && msg.Type != protocol.MsgTypeImage && msg.Type != protocol.MsgTypeJoin && msg.Type != protocol.MsgTypeLeave {
+		return len(b), nil // Swallow non-chat/image/join/leave messages for SSH users
 	}
 
 	content := msg.Content
 
 	// Handle Image Placeholder for SSH
 	if msg.Type == protocol.MsgTypeImage {
-		content = "[Image]" // Basic placeholder
-		// If we want to show filename or something, we'd need to parse the content (which might be encrypted blob)
-		// For E2EE, it's just a blob.
 		content = "[Image Attachment]"
-	} else if a.key != "" {
+	} else if a.key != "" && (msg.Type == protocol.MsgTypeChat || msg.Type == protocol.MsgTypeJoin || msg.Type == protocol.MsgTypeLeave) { // Only decrypt chat/join/leave messages
 		decrypted, err := crypto.Decrypt(msg.Content, a.key)
 		if err == nil {
 			content = decrypted + " [E2EE]"
@@ -256,8 +265,13 @@ func (a *SSHAdapterPipe) SetWriteDeadline(t time.Time) error { return nil }
 // We need two broadcast functions or flags
 func (n *Node) broadcastToClients(msg protocol.Message) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
+	conns := make([]net.Conn, 0, len(n.clients))
 	for conn := range n.clients {
+		conns = append(conns, conn)
+	}
+	n.mu.Unlock()
+
+	for _, conn := range conns {
 		go func(c net.Conn, m protocol.Message) {
 			if err := protocol.SendMessage(c, m); err != nil {
 				log.Printf("Error sending to client: %v", err)
@@ -268,8 +282,13 @@ func (n *Node) broadcastToClients(msg protocol.Message) {
 
 func (n *Node) broadcastToPeers(msg protocol.Message) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
+	conns := make([]net.Conn, 0, len(n.peers))
 	for conn := range n.peers {
+		conns = append(conns, conn)
+	}
+	n.mu.Unlock()
+
+	for _, conn := range conns {
 		go func(c net.Conn, m protocol.Message) {
 			if err := protocol.SendMessage(c, m); err != nil {
 				log.Printf("Error sending to peer: %v", err)
@@ -348,18 +367,42 @@ func (n *Node) startElectionLoop() {
 func (n *Node) handleMessages() {
 	for {
 		select {
-		case conn := <-n.register:
+		case reg := <-n.register:
 			n.mu.Lock()
-			n.clients[conn] = true
+			n.clients[reg.Conn] = reg.User
 			n.mu.Unlock()
-			log.Printf("New client connected: %s", conn.RemoteAddr())
+			log.Printf("Active Member Joined: %s (%s)", reg.User, reg.Conn.RemoteAddr())
+
+			// Broadcast Join Message
+			joinMsg := protocol.Message{
+				Type:      protocol.MsgTypeJoin,
+				Sender:    "Server",
+				Content:   fmt.Sprintf("*** %s has joined the chat ***\a", reg.User), // \a for Bell
+				Timestamp: time.Now(),
+			}
+			go func() { n.broadcast <- joinMsg }()
 
 		case conn := <-n.unregister:
 			n.mu.Lock()
-			if _, ok := n.clients[conn]; ok {
+			if user, ok := n.clients[conn]; ok {
 				delete(n.clients, conn)
 				conn.Close()
-				log.Printf("Client disconnected: %s", conn.RemoteAddr())
+				log.Printf("Client disconnected: %s (%s)", conn.RemoteAddr(), user)
+
+				// Broadcast Leave
+				if user != "" && user != "Connecting..." {
+					leaveMsg := protocol.Message{
+						Type:      protocol.MsgTypeLeave,
+						Sender:    "Server",
+						Content:   fmt.Sprintf("*** %s has left the chat ***\a", user), // \a for Bell
+						Timestamp: time.Now(),
+					}
+					// Only broadcast to active clients?
+					// Use a separate goroutine to avoid deadlock?
+					// Or just put in broadcast channel?
+					// Putting in broadcast channel is safe if it doesn't block.
+					go func() { n.broadcast <- leaveMsg }()
+				}
 			}
 			n.mu.Unlock()
 
@@ -378,14 +421,15 @@ func (n *Node) handleMessages() {
 	}
 }
 
-func (n *Node) handlePeerMessage(conn net.Conn) {
+func (n *Node) handlePeerMessage(conn net.Conn, decoder *protocol.Decoder) {
 	defer conn.Close()
 	for {
-		msg, err := protocol.ReadMessage(conn)
+		msg, err := decoder.Decode()
 		if err != nil {
 			log.Printf("Peer disconnected: %v", err)
 			n.mu.Lock()
 			delete(n.peers, conn)
+			delete(n.peerIDs, conn) // Ensure peerID is also removed
 			n.mu.Unlock()
 			return
 		}
@@ -440,8 +484,56 @@ func (n *Node) handlePeerMessage(conn net.Conn) {
 			continue
 		}
 
+		if msg.Type == protocol.MsgTypeUserSync {
+			var receivedUsers []string
+			if err := json.Unmarshal([]byte(msg.Content), &receivedUsers); err == nil {
+				n.mu.Lock()
+				for _, u := range receivedUsers {
+					n.remoteUsers[u] = true
+				}
+				n.mu.Unlock()
+				log.Printf("Synced %d remote users from peer", len(receivedUsers))
+			}
+			continue
+		}
+
 		// Persist peer messages too
-		if msg.Type == protocol.MsgTypeChat {
+		if msg.Type == protocol.MsgTypeChat || msg.Type == protocol.MsgTypeJoin || msg.Type == protocol.MsgTypeLeave {
+
+			// Update Remote Users based on Join/Leave
+			if msg.Type == protocol.MsgTypeJoin {
+				// Parse username from content?
+				// Content is "*** Alice has joined... ***"
+				// This is parsing heavy.
+				// Ideally we should have put username in Sender?
+				// Join message sender is "Server".
+				// We should have put the user in Content or Sender.
+				// Let's rely on parsing for now?
+				// No, let's fix the Join message generation to be cleaner?
+				// Wait, the Join message is generated by the node that has the client.
+				// It puts "Server" as sender.
+				// Content: "*** Alice has joined... "
+
+				// Let's hack parsing for now:
+				// "*** %s has joined the chat ***"
+				parts := strings.Split(msg.Content, " ")
+				if len(parts) >= 2 {
+					user := parts[1] // "***", "Alice", "has", ...
+					n.mu.Lock()
+					n.remoteUsers[user] = true
+					n.mu.Unlock()
+				}
+			} else if msg.Type == protocol.MsgTypeLeave {
+				// "*** Alice has left... ***"
+				parts := strings.Split(msg.Content, " ")
+				if len(parts) >= 2 {
+					user := parts[1]
+					n.mu.Lock()
+					delete(n.remoteUsers, user)
+					n.mu.Unlock()
+				}
+			}
+
 			if err := n.storage.Save(*msg); err != nil {
 				log.Printf("Failed to persist peer message: %v", err)
 			}
@@ -453,85 +545,51 @@ func (n *Node) handlePeerMessage(conn net.Conn) {
 }
 
 func (n *Node) handleConnection(conn net.Conn) {
-	// Peek or read the first message to determine type
-	// For simplicity, we just read it. If it's not handshake, we assume it's a client join/chat and process it.
-	// But `ReadMessage` consumes it. We might need to handle it.
+	// Not deferring Close here because handleClientLoop/handlePeerMessage takes ownership
 
-	// Issue: If it's a client, the first message might be "Chat" or nothing yet? Clients usually just connect.
-	// So we need clients to send a "Join" or "Handshake" too?
-	// Or we assume clients are passive until they send "Chat".
-	// But Peers MUST send Handshake immediately.
+	decoder := protocol.NewDecoder(conn)
 
-	// Let's rely on a timeout? No.
-	// Let's assume clients send NOTHING on connect, or we wait for first message.
-	// If first message is Handshake -> Peer.
-	// If first message is Chat/Join -> Client.
-
-	// Actually, `handleConnection` blocks reading the first message.
-	// If a client connects and waits for user input, this blocks.
-	// This is fine, we don't treat them as registered until they send something?
-	// No, we want to register clients immediately for broadcasting?
-	// But without knowing if it's a peer, we can't puts it in `n.peers` vs `n.clients`.
-
-	// Better approach:
-	// Clients enter `n.clients` by default?
-	// If we receive Handshake, we move it to `n.peers`?
-	// Complicated state transition.
-
-	// Simplest: Clients ALSO send a Join/Handshake message.
-	// Current client code:
-	// Connects.
-	// Starts reading goroutine.
-	// Waits for user input.
-	// User types "Hello". Sends MsgTypeChat.
-
-	// So if we block on `ReadMessage`, the client won't see any messages until they type something.
-	// That's bad.
-
-	// Solution:
-	// Start a goroutine that reads.
-	// Checks type.
-	// If Handshake -> Register as Peer.
-	// Else -> Register as Client and process that message.
+	// Read first message to identify (Handshake or Client Login)
+	msg, err := decoder.Decode()
+	if err != nil {
+		log.Printf("Failed to read handshake: %v", err)
+		conn.Close()
+		return
+	}
 
 	go func() {
-		msg, err := protocol.ReadMessage(conn)
-		if err != nil {
-			log.Printf("Connection error during handshake: %v", err)
-			conn.Close()
-			return
-		}
-
 		if msg.Type == protocol.MsgTypePeerHandshake {
-			log.Printf("Accepted peer connection: %s", conn.RemoteAddr())
+			// Register as peer
+			var peerPort int
+			fmt.Sscanf(msg.Content, "%d", &peerPort)
 
-			// Parse ID from content
-			var peerID int
-			fmt.Sscanf(msg.Content, "%d", &peerID)
-			log.Printf("Peer identified as ID: %d", peerID)
-
+			log.Printf("Accepted peer connection from port %d (%s)", peerPort, conn.RemoteAddr())
 			n.mu.Lock()
 			n.peers[conn] = time.Now()
-			n.peerIDs[conn] = peerID
+			n.peerIDs[conn] = peerPort
 			n.mu.Unlock()
 
 			// Trigger History Sync
-			// Get my last timestamp
-			lastTime, err := n.storage.GetLastTimestamp()
-			if err != nil {
-				log.Printf("Error getting last timestamp: %v", err)
-			} else {
-				// Send Sync Request
-				req := protocol.Message{
-					Type:      protocol.MsgTypeSyncRequest,
+			// ... (existing sync req) ...
+
+			// Send User Sync (My local clients)
+			n.mu.Lock()
+			var localUsers []string
+			for _, u := range n.clients {
+				localUsers = append(localUsers, u)
+			}
+			n.mu.Unlock()
+			if len(localUsers) > 0 {
+				userBytes, _ := json.Marshal(localUsers)
+				protocol.SendMessage(conn, protocol.Message{
+					Type:      protocol.MsgTypeUserSync,
 					Sender:    "Node",
-					Timestamp: lastTime, // This is the 'since' time
-				}
-				protocol.SendMessage(conn, req)
+					Content:   string(userBytes),
+					Timestamp: time.Now(),
+				})
 			}
 
-			n.handlePeerMessage(conn)
-			n.handlePeerMessage(conn)
+			n.handlePeerMessage(conn, decoder)
 		} else if msg.Type == protocol.MsgTypeLogin {
 			// Client Login Attempt
 			user, pass := auth.ParseCredentials(msg.Content)
@@ -545,8 +603,20 @@ func (n *Node) handleConnection(conn net.Conn) {
 					Content: "OK",
 				})
 
-				n.register <- conn
-				n.handleClientLoop(conn)
+				n.register <- ClientRegistration{Conn: conn, User: user}
+
+				// Send History (Last 50 messages)
+				history, err := n.storage.GetRecentMessages(50)
+				if err == nil {
+					for _, hMsg := range history {
+						// Only send Chat/Image messages
+						if hMsg.Type == protocol.MsgTypeChat || hMsg.Type == protocol.MsgTypeImage || hMsg.Type == protocol.MsgTypeJoin || hMsg.Type == protocol.MsgTypeLeave {
+							protocol.SendMessage(conn, hMsg)
+						}
+					}
+				}
+
+				n.handleClientLoop(conn, decoder)
 			} else {
 				log.Printf("Client authentication failed: %s", conn.RemoteAddr())
 				protocol.SendMessage(conn, protocol.Message{
@@ -556,14 +626,27 @@ func (n *Node) handleConnection(conn net.Conn) {
 				})
 				conn.Close()
 			}
+		} else if msg.Type == protocol.MsgTypeRegister {
+			// Registration Attempt
+			user, pass := auth.ParseCredentials(msg.Content)
+			if n.auth.Register(user, pass) {
+				log.Printf("New user registered: %s", user)
+				protocol.SendMessage(conn, protocol.Message{
+					Type:    protocol.MsgTypeAuthResult,
+					Sender:  "Server",
+					Content: "OK_REGISTERED",
+				})
+			} else {
+				log.Printf("Registration failed (exists): %s", user)
+				protocol.SendMessage(conn, protocol.Message{
+					Type:    protocol.MsgTypeAuthResult,
+					Sender:  "Server",
+					Content: "FAIL_EXISTS",
+				})
+			}
+			conn.Close() // Close connection after registration attempt
 		} else {
 			// If not Handshake AND not Login, we reject.
-			// Currently we treated it as "Client Connection" indiscriminately.
-			// Now we enforce Login.
-
-			// Backward compatibility: If we just dump them in `handleClientLoop`,
-			// they will be unauthenticated.
-			// Let's REJECT.
 			log.Printf("Unauthenticated connection attempt: %s", conn.RemoteAddr())
 			protocol.SendMessage(conn, protocol.Message{
 				Type:    protocol.MsgTypeAuthResult,
@@ -579,17 +662,37 @@ func (n *Node) CheckAuth(user, pass string) bool {
 	return n.auth.Check(user, pass)
 }
 
-func (n *Node) handleClientLoop(conn net.Conn) {
+func (n *Node) handleClientLoop(conn net.Conn, decoder *protocol.Decoder) {
 	defer func() {
 		n.unregister <- conn
 	}()
 
 	for {
-		msg, err := protocol.ReadMessage(conn)
+		msg, err := decoder.Decode()
 		if err != nil {
 			log.Printf("Error reading from client %s: %v", conn.RemoteAddr(), err)
 			break
 		}
+
+		// Check for commands
+		if strings.TrimSpace(msg.Content) == "/active" || strings.TrimSpace(msg.Content) == "/users" {
+			n.mu.Lock()
+			var users []string
+			for _, u := range n.clients {
+				users = append(users, u)
+			}
+			n.mu.Unlock()
+
+			response := fmt.Sprintf("Active Users (%d): %s", len(users), strings.Join(users, ", "))
+			protocol.SendMessage(conn, protocol.Message{
+				Type:      protocol.MsgTypeChat,
+				Sender:    "Server",
+				Content:   response,
+				Timestamp: time.Now(),
+			})
+			continue
+		}
+
 		n.broadcast <- *msg
 	}
 }

@@ -1,34 +1,76 @@
 package auth
 
-import "strings"
+import (
+	"encoding/json"
+	"os"
+	"strings"
+	"sync"
+)
 
 // Authenticator handles user validation
 type Authenticator struct {
-	// Map "username" -> "password"
-	users map[string]string
+	mu    sync.Mutex
+	users map[string]string // username -> password
+	file  string
 }
 
 // NewAuthenticator creates a new instance with a default set of users
-// In production, this would load from a DB or file.
 func NewAuthenticator() *Authenticator {
-	return &Authenticator{
-		users: map[string]string{
-			"admin": "admin123",
-			"user1": "pass1",
-			"user2": "pass2",
-			"Alice": "secret",
-			"Bob":   "secret",
-		},
+	a := &Authenticator{
+		users: make(map[string]string),
+		file:  "users.json",
 	}
+
+	// Try to load
+	if err := a.load(); err != nil {
+		// If load fails (e.g. no file), init defaults
+		a.users["admin"] = "admin123"
+		a.users["Alice"] = "secret"
+		a.users["Bob"] = "secret"
+		a.save()
+	}
+	return a
 }
 
 // Check validates credentials.
 func (a *Authenticator) Check(username, password string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	expected, ok := a.users[username]
 	if !ok {
 		return false
 	}
 	return expected == password
+}
+
+// Register adds a new user. Returns false if user already exists.
+func (a *Authenticator) Register(username, password string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if _, exists := a.users[username]; exists {
+		return false
+	}
+
+	a.users[username] = password
+	a.save()
+	return true
+}
+
+func (a *Authenticator) save() error {
+	data, err := json.MarshalIndent(a.users, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(a.file, data, 0644)
+}
+
+func (a *Authenticator) load() error {
+	data, err := os.ReadFile(a.file)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, &a.users)
 }
 
 // ParseCredentials parses "user:pass" string
