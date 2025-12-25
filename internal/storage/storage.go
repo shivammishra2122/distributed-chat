@@ -1,56 +1,26 @@
 package storage
 
 import (
-	"bufio"
 	"distributed-chat/internal/protocol"
 	"encoding/json"
-	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
 )
 
 type Storage struct {
-	filename    string
-	mu          sync.Mutex
-	file        *os.File
-	writer      *bufio.Writer
-	flushTicker *time.Ticker
-	stopFlush   chan struct{}
+	messages []protocol.Message
+	capacity int
+	mu       sync.Mutex
 }
 
-func NewStorage(nodePort int) (*Storage, error) {
-	filename := fmt.Sprintf("node-%d.log", nodePort)
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, err
-	}
-
-	s := &Storage{
-		filename:    filename,
-		file:        file,
-		writer:      bufio.NewWriterSize(file, 4096), // 4KB Buffer
-		flushTicker: time.NewTicker(1 * time.Second), // Flush every second
-		stopFlush:   make(chan struct{}),
-	}
-
-	// Start background flusher
-	go s.runFlusher()
-
-	return s, nil
-}
-
-func (s *Storage) runFlusher() {
-	for {
-		select {
-		case <-s.flushTicker.C:
-			s.mu.Lock()
-			s.writer.Flush()
-			s.mu.Unlock()
-		case <-s.stopFlush:
-			s.flushTicker.Stop()
-			return
-		}
+// NewStorage creates a new in-memory storage with a fixed capacity (Ring Buffer).
+// It no longer requires a port since it doesn't create file-based logs.
+func NewStorage(capacity int) *Storage {
+	return &Storage{
+		messages: make([]protocol.Message, 0, capacity),
+		capacity: capacity,
 	}
 }
 
@@ -58,117 +28,105 @@ func (s *Storage) Save(msg protocol.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
+	// Append new message
+	s.messages = append(s.messages, msg)
+
+	// Ring Buffer Logic: Drop oldest if over capacity
+	if len(s.messages) > s.capacity {
+		// Optimization: Re-slice to remove the first element
+		// For very large buffers, a real Ring/Circular buffer is better (index wrapping),
+		// but for chat history (e.g. 1000 items), re-slicing is perfectly fine and simple.
+		s.messages = s.messages[1:]
 	}
 
-	if _, err := s.writer.Write(data); err != nil {
-		return err
-	}
-	if _, err := s.writer.WriteString("\n"); err != nil {
-		return err
-	}
-	// Note: We rely on ticker or explicit Flush for persistence now
 	return nil
 }
 
 func (s *Storage) Close() error {
-	close(s.stopFlush)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.writer.Flush()
-	return s.file.Close()
+	// No file to close
+	return nil
 }
 
+// GetLastTimestamp returns the timestamp of the last message in memory
 func (s *Storage) GetLastTimestamp() (time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Naive implementation: Read the whole file to find the last valid message
-	// In production, we'd maintain an index or read from end.
-	// Since we are creating a new reader, we need the filename, not the file handle (which is open for writing)
-
-	// Re-do with os.Open
-	f, err := os.Open(s.filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return time.Time{}, nil
-		}
-		return time.Time{}, err
+	if len(s.messages) == 0 {
+		return time.Time{}, nil
 	}
-	defer f.Close()
-
-	decoder := json.NewDecoder(f)
-	var msg protocol.Message
-	var lastTime time.Time
-
-	for {
-		if err := decoder.Decode(&msg); err != nil {
-			break
-		}
-		if msg.Timestamp.After(lastTime) {
-			lastTime = msg.Timestamp
-		}
-	}
-	return lastTime, nil
+	return s.messages[len(s.messages)-1].Timestamp, nil
 }
 
 func (s *Storage) GetMessagesAfter(t time.Time) ([]protocol.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.filename)
-	if err != nil {
-		return nil, nil // No file
-	}
-	defer f.Close()
-
-	var messages []protocol.Message
-	decoder := json.NewDecoder(f)
-	var msg protocol.Message
-
-	for {
-		if err := decoder.Decode(&msg); err != nil {
-			break
-		}
+	var results []protocol.Message
+	// Iterate to find messages after t
+	// Optimization: Could binary search since timestamps are sorted, but linear scan is fast enough for <10k items.
+	for _, msg := range s.messages {
 		if msg.Timestamp.After(t) {
-			messages = append(messages, msg)
+			results = append(results, msg)
 		}
 	}
-	return messages, nil
+	return results, nil
 }
 
 func (s *Storage) GetRecentMessages(count int) ([]protocol.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.filename)
-	if err != nil {
-		return nil, nil // No file
-	}
-	defer f.Close()
-
-	var messages []protocol.Message
-	decoder := json.NewDecoder(f)
-	var msg protocol.Message
-
-	// Read all (naive but simple for now)
-	for {
-		if err := decoder.Decode(&msg); err != nil {
-			break
-		}
-		messages = append(messages, msg)
-	}
-
-	total := len(messages)
+	total := len(s.messages)
 	if total == 0 {
-		return nil, nil // Return empty list, not nil error
+		return nil, nil
 	}
 
 	if count > total {
 		count = total
 	}
 
-	return messages[total-count:], nil
+	// Return the last 'count' messages
+	return s.messages[total-count:], nil
+}
+
+// SaveSnapshot dumps the current in-memory messages to a JSON file
+func (s *Storage) SaveSnapshot(filename string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := json.Marshal(s.messages)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filename, data, 0644)
+}
+
+// LoadSnapshot loads messages from a JSON file into memory
+func (s *Storage) LoadSnapshot(filename string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No snapshot exists, start empty
+		}
+		return err
+	}
+
+	return json.Unmarshal(data, &s.messages)
+}
+
+// StartSnapshotter starts a background ticker to save snapshots periodically
+func (s *Storage) StartSnapshotter(interval time.Duration, filename string) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			if err := s.SaveSnapshot(filename); err != nil {
+				log.Printf("Failed to save snapshot to %s: %v", filename, err)
+			}
+		}
+	}()
 }

@@ -1,0 +1,19 @@
+# CodeRabbit Configuration File
+# Documentation: https://coderabbit.ai/docs
+
+version: "0.1"
+
+chat:
+  auto_reply: true
+
+reviews:
+  high_level_summary: true
+  poem: true
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    ignore_title_keywords:
+      - "WIP"
+      - "wip"
+      - "SQUASH"

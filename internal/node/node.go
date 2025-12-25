@@ -50,10 +50,17 @@ const (
 )
 
 func NewNode(port int) *Node {
-	store, err := storage.NewStorage(port)
-	if err != nil {
-		log.Fatalf("Failed to initialize storage: %v", err)
+	store := storage.NewStorage(1024)
+	snapshotFile := fmt.Sprintf("node-%d.snapshot", port)
+
+	// Load existing snapshot if available
+	if err := store.LoadSnapshot(snapshotFile); err != nil {
+		log.Printf("Warning: Failed to load snapshot: %v", err)
 	}
+
+	// Start auto-snapshotting (every 10 seconds for standard durability)
+	store.StartSnapshotter(10*time.Second, snapshotFile)
+
 	return &Node{
 		port:        port,
 		clients:     make(map[net.Conn]string),
