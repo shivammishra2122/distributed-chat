@@ -1,0 +1,13 @@
+services:
+  chat-node:
+    build: .
+    container_name: dedicated-chat-server
+    restart: always
+    ports:
+      - "8080:8080" # Chat Protocol
+      - "2222:2222" # SSH Access
+    volumes:
+      - ./data:/data # Persist snapshots to host
+    env_file:
+      - .env
+    command: [ "server" ]

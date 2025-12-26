@@ -17,3 +17,4 @@ users.json
 # OS
 .DS_Store
 *.snapshot
+.env
