@@ -1,5 +1,6 @@
 # Build Stage
-FROM golang:1.25-alpine AS builder
+# Build Stage
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
@@ -13,8 +14,8 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build the server binary
-RUN go build -o /app/server ./cmd/server
+# Build the server binary with optimizations (strip symbols)
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/server ./cmd/server
 
 # Final Stage (Lightweight)
 FROM alpine:latest

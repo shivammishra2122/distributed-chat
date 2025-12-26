@@ -21,14 +21,15 @@ import (
 type ClientRegistration struct {
 	Conn net.Conn
 	User string
+	Send chan protocol.Message // Outbound channel for this client
 }
 
 type Node struct {
 	port        int
-	clients     map[net.Conn]string    // map[conn]username
-	remoteUsers map[string]bool        // Set of usernames on other nodes
-	peers       map[net.Conn]time.Time // Track last seen time
-	peerIDs     map[net.Conn]int       // Add tracking of Peer Ports (IDs)
+	clients     map[net.Conn]ClientRegistration // Use struct to store User + Channel
+	remoteUsers map[string]bool                 // Set of usernames on other nodes
+	peers       map[net.Conn]time.Time          // Track last seen time
+	peerIDs     map[net.Conn]int                // Add tracking of Peer Ports (IDs)
 	storage     *storage.Storage
 	auth        *auth.Authenticator // Auth module
 	broadcast   chan protocol.Message
@@ -50,20 +51,19 @@ const (
 )
 
 func NewNode(port int) *Node {
-	store := storage.NewStorage(1024)
-	snapshotFile := fmt.Sprintf("node-%d.snapshot", port)
+	// Use current directory for data, or allow config
+	store := storage.NewStorage(1024, ".", port)
 
-	// Load existing snapshot if available
-	if err := store.LoadSnapshot(snapshotFile); err != nil {
-		log.Printf("Warning: Failed to load snapshot: %v", err)
+	// Load AOF
+	if err := store.LoadAOF(".", port); err != nil {
+		log.Printf("Warning: Failed to load AOF: %v", err)
 	}
 
-	// Start auto-snapshotting (every 10 seconds for standard durability)
-	store.StartSnapshotter(10*time.Second, snapshotFile)
+	// StartSnapshotter is removed (AOF is immediate)
 
 	return &Node{
 		port:        port,
-		clients:     make(map[net.Conn]string),
+		clients:     make(map[net.Conn]ClientRegistration),
 		remoteUsers: make(map[string]bool),
 		peers:       make(map[net.Conn]time.Time),
 		peerIDs:     make(map[net.Conn]int),
@@ -183,7 +183,17 @@ func (n *Node) JoinSSH(s ssh.Session) {
 	// Since SSH is already authenticated by the Server's PasswordHandler,
 	// we bypass the TCP Login Handshake and register directly.
 
-	n.register <- ClientRegistration{Conn: adapter, User: s.User()}
+	// Create client struct with channel
+	clientReg := ClientRegistration{
+		Conn: adapter,
+		User: s.User(),
+		Send: make(chan protocol.Message, 256), // Buffer for 256 messages
+	}
+
+	n.register <- clientReg
+
+	// Start Write Pump for SSH Client
+	go n.writePump(adapter, clientReg.Send)
 
 	// Write a welcome message to the user?
 	adapter.Session.Write([]byte("Welcome to Distributed Chat! (SSH Mode)\r\nType your messages below.\r\n"))
@@ -270,20 +280,29 @@ func (a *SSHAdapterPipe) SetWriteDeadline(t time.Time) error { return nil }
 
 // actually, let's keep it simple.
 // We need two broadcast functions or flags
+// broadcastToClients sends to the client's write channel (Non-blocking)
 func (n *Node) broadcastToClients(msg protocol.Message) {
 	n.mu.Lock()
-	conns := make([]net.Conn, 0, len(n.clients))
-	for conn := range n.clients {
-		conns = append(conns, conn)
-	}
-	n.mu.Unlock()
+	defer n.mu.Unlock()
 
-	for _, conn := range conns {
-		go func(c net.Conn, m protocol.Message) {
-			if err := protocol.SendMessage(c, m); err != nil {
-				log.Printf("Error sending to client: %v", err)
-			}
-		}(conn, msg)
+	for _, client := range n.clients {
+		select {
+		case client.Send <- msg:
+		default:
+			log.Printf("Client %s buffer full, dropping message", client.User)
+			// Ideally we might disconnect slow consumers here
+		}
+	}
+}
+
+// writePump pumps messages from the hub to the client connection.
+func (n *Node) writePump(conn net.Conn, send <-chan protocol.Message) {
+	defer conn.Close()
+	for msg := range send {
+		if err := protocol.SendMessage(conn, msg); err != nil {
+			log.Printf("Write error to %s: %v", conn.RemoteAddr(), err)
+			return
+		}
 	}
 }
 
@@ -376,7 +395,7 @@ func (n *Node) handleMessages() {
 		select {
 		case reg := <-n.register:
 			n.mu.Lock()
-			n.clients[reg.Conn] = reg.User
+			n.clients[reg.Conn] = reg // Store the whole struct
 			n.mu.Unlock()
 			log.Printf("Active Member Joined: %s (%s)", reg.User, reg.Conn.RemoteAddr())
 
@@ -391,17 +410,18 @@ func (n *Node) handleMessages() {
 
 		case conn := <-n.unregister:
 			n.mu.Lock()
-			if user, ok := n.clients[conn]; ok {
+			if client, ok := n.clients[conn]; ok {
 				delete(n.clients, conn)
+				close(client.Send) // Close channel to stop writePump
 				conn.Close()
-				log.Printf("Client disconnected: %s (%s)", conn.RemoteAddr(), user)
+				log.Printf("Client disconnected: %s (%s)", conn.RemoteAddr(), client.User)
 
 				// Broadcast Leave
-				if user != "" && user != "Connecting..." {
+				if client.User != "" && client.User != "Connecting..." {
 					leaveMsg := protocol.Message{
 						Type:      protocol.MsgTypeLeave,
 						Sender:    "Server",
-						Content:   fmt.Sprintf("*** %s has left the chat ***\a", user), // \a for Bell
+						Content:   fmt.Sprintf("*** %s has left the chat ***\a", client.User), // \a for Bell
 						Timestamp: time.Now(),
 					}
 					// Only broadcast to active clients?
@@ -582,8 +602,8 @@ func (n *Node) handleConnection(conn net.Conn) {
 			// Send User Sync (My local clients)
 			n.mu.Lock()
 			var localUsers []string
-			for _, u := range n.clients {
-				localUsers = append(localUsers, u)
+			for _, c := range n.clients {
+				localUsers = append(localUsers, c.User)
 			}
 			n.mu.Unlock()
 			if len(localUsers) > 0 {
@@ -610,7 +630,15 @@ func (n *Node) handleConnection(conn net.Conn) {
 					Content: "OK",
 				})
 
-				n.register <- ClientRegistration{Conn: conn, User: user}
+				clientReg := ClientRegistration{
+					Conn: conn,
+					User: user,
+					Send: make(chan protocol.Message, 256),
+				}
+				n.register <- clientReg
+
+				// Start Write Pump logic
+				go n.writePump(conn, clientReg.Send)
 
 				// Send History (Last 50 messages)
 				history, err := n.storage.GetRecentMessages(50)
@@ -685,8 +713,8 @@ func (n *Node) handleClientLoop(conn net.Conn, decoder *protocol.Decoder) {
 		if strings.TrimSpace(msg.Content) == "/active" || strings.TrimSpace(msg.Content) == "/users" {
 			n.mu.Lock()
 			var users []string
-			for _, u := range n.clients {
-				users = append(users, u)
+			for _, c := range n.clients {
+				users = append(users, c.User)
 			}
 			n.mu.Unlock()
 

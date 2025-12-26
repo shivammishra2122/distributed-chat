@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"bufio"
 	"distributed-chat/internal/protocol"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -13,14 +15,25 @@ type Storage struct {
 	messages []protocol.Message
 	capacity int
 	mu       sync.Mutex
+	aofFile  *os.File
+	encoder  *json.Encoder
 }
 
-// NewStorage creates a new in-memory storage with a fixed capacity (Ring Buffer).
-// It no longer requires a port since it doesn't create file-based logs.
-func NewStorage(capacity int) *Storage {
+// NewStorage creates a new in-memory storage backed by an Append-Only File.
+func NewStorage(capacity int, dataDir string, port int) *Storage {
+	filename := fmt.Sprintf("%s/node-%d.aof", dataDir, port)
+
+	// Open AOF file for appending, create if not exists
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Failed to open AOF file %s: %v", filename, err)
+	}
+
 	return &Storage{
 		messages: make([]protocol.Message, 0, capacity),
 		capacity: capacity,
+		aofFile:  file,
+		encoder:  json.NewEncoder(file),
 	}
 }
 
@@ -28,22 +41,26 @@ func (s *Storage) Save(msg protocol.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Append new message
+	// 1. Append to Memory
 	s.messages = append(s.messages, msg)
-
-	// Ring Buffer Logic: Drop oldest if over capacity
 	if len(s.messages) > s.capacity {
-		// Optimization: Re-slice to remove the first element
-		// For very large buffers, a real Ring/Circular buffer is better (index wrapping),
-		// but for chat history (e.g. 1000 items), re-slicing is perfectly fine and simple.
 		s.messages = s.messages[1:]
+	}
+
+	// 2. Append to Disk (AOF)
+	if err := s.encoder.Encode(msg); err != nil {
+		return fmt.Errorf("failed to write to AOF: %w", err)
 	}
 
 	return nil
 }
 
 func (s *Storage) Close() error {
-	// No file to close
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.aofFile != nil {
+		return s.aofFile.Close()
+	}
 	return nil
 }
 
@@ -63,8 +80,6 @@ func (s *Storage) GetMessagesAfter(t time.Time) ([]protocol.Message, error) {
 	defer s.mu.Unlock()
 
 	var results []protocol.Message
-	// Iterate to find messages after t
-	// Optimization: Could binary search since timestamps are sorted, but linear scan is fast enough for <10k items.
 	for _, msg := range s.messages {
 		if msg.Timestamp.After(t) {
 			results = append(results, msg)
@@ -85,48 +100,43 @@ func (s *Storage) GetRecentMessages(count int) ([]protocol.Message, error) {
 	if count > total {
 		count = total
 	}
-
-	// Return the last 'count' messages
 	return s.messages[total-count:], nil
 }
 
-// SaveSnapshot dumps the current in-memory messages to a JSON file
-func (s *Storage) SaveSnapshot(filename string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// LoadAOF reads the Append-Only File line by line to rebuild memory state
+func (s *Storage) LoadAOF(dataDir string, port int) error {
+	filename := fmt.Sprintf("%s/node-%d.aof", dataDir, port)
 
-	data, err := json.Marshal(s.messages)
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(filename, data, 0644)
-}
-
-// LoadSnapshot loads messages from a JSON file into memory
-func (s *Storage) LoadSnapshot(filename string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	data, err := os.ReadFile(filename)
+	file, err := os.Open(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // No snapshot exists, start empty
+			return nil // New node, no history
 		}
 		return err
 	}
+	defer file.Close()
 
-	return json.Unmarshal(data, &s.messages)
-}
+	scanner := bufio.NewScanner(file)
+	var loadedMessages []protocol.Message
 
-// StartSnapshotter starts a background ticker to save snapshots periodically
-func (s *Storage) StartSnapshotter(interval time.Duration, filename string) {
-	ticker := time.NewTicker(interval)
-	go func() {
-		for range ticker.C {
-			if err := s.SaveSnapshot(filename); err != nil {
-				log.Printf("Failed to save snapshot to %s: %v", filename, err)
-			}
+	for scanner.Scan() {
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			log.Printf("Warning: Corrupt line in AOF: %v", err)
+			continue
 		}
-	}()
+		loadedMessages = append(loadedMessages, msg)
+	}
+
+	s.mu.Lock()
+	// If loaded history is larger than capacity, only take the tail
+	if len(loadedMessages) > s.capacity {
+		s.messages = loadedMessages[len(loadedMessages)-s.capacity:]
+	} else {
+		s.messages = loadedMessages
+	}
+	s.mu.Unlock()
+
+	log.Printf("Restored %d messages from AOF", len(s.messages))
+	return scanner.Err()
 }

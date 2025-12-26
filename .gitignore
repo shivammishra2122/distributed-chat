@@ -18,3 +18,4 @@ users.json
 .DS_Store
 *.snapshot
 .env
+server
