@@ -1,0 +1,20 @@
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2026-02-04T22:47:29.018192+05:30"}
+{"type":0,"sender":"Alice","content":"hello","timestamp":"2026-02-04T22:47:59.370168+05:30"}
+{"type":0,"sender":"Alice","content":"how are you ","timestamp":"2026-02-04T22:48:03.673444+05:30"}
+{"type":0,"sender":"Bob","content":"i am good ","timestamp":"2026-02-04T22:48:15.151219+05:30"}
+{"type":2,"sender":"Server","content":"*** Alice has left the chat ***\u0007","timestamp":"2026-02-04T22:48:35.709808+05:30"}
+{"type":0,"sender":"Bob","content":"hwo ashdvfhl","timestamp":"2026-02-04T22:48:42.950629+05:30"}
+{"type":0,"sender":"Bob","content":"hgsdf","timestamp":"2026-02-04T22:48:48.092723+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2026-02-04T22:48:54.415587+05:30"}
+{"type":2,"sender":"Server","content":"*** Alice has left the chat ***\u0007","timestamp":"2026-02-04T22:49:26.25971+05:30"}
+{"type":1,"sender":"Server","content":"*** Alice has joined the chat ***\u0007","timestamp":"2026-02-06T22:08:15.546112+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2026-02-06T22:08:40.141585+05:30"}
+{"type":0,"sender":"Bob","content":"hwehq","timestamp":"2026-02-06T22:08:46.077523+05:30"}
+{"type":0,"sender":"Alice","content":"hwegh","timestamp":"2026-02-06T22:08:59.285612+05:30"}
+{"type":2,"sender":"Server","content":"*** Bob has left the chat ***\u0007","timestamp":"2026-02-06T22:09:08.143844+05:30"}
+{"type":0,"sender":"Alice","content":"dfgwe","timestamp":"2026-02-06T22:09:12.350109+05:30"}
+{"type":0,"sender":"Alice","content":"wer","timestamp":"2026-02-06T22:09:12.768149+05:30"}
+{"type":0,"sender":"Alice","content":"gwe","timestamp":"2026-02-06T22:09:13.215627+05:30"}
+{"type":0,"sender":"Alice","content":"rgw","timestamp":"2026-02-06T22:09:13.683629+05:30"}
+{"type":0,"sender":"Alice","content":"erg","timestamp":"2026-02-06T22:09:14.326824+05:30"}
+{"type":1,"sender":"Server","content":"*** Bob has joined the chat ***\u0007","timestamp":"2026-02-06T22:09:32.589304+05:30"}

@@ -1,13 +1,17 @@
 package main
 
 import (
+	"crypto/tls"
 	"distributed-chat/internal/node"
 	sshserver "distributed-chat/internal/ssh"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/joho/godotenv"
 )
@@ -33,8 +37,16 @@ func main() {
 
 	fmt.Printf("Starting Chat Server on port %d...\n", *port)
 
+	// Load TLS Certificates
+	cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+	if err != nil {
+		log.Fatalf("Failed to load TLS keys: %v\nRun ./scripts/gen_certs.sh first!", err)
+	}
+
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+
 	// Initialize and run the node
-	chatNode := node.NewNode(*port)
+	chatNode := node.NewNode(*port, tlsConfig)
 
 	// Set E2EE Secret Key if provided
 	if secretKey != "" {
@@ -53,7 +65,18 @@ func main() {
 	// Start SSH Server
 	go sshserver.StartServer(*sshPort, chatNode)
 
-	chatNode.Run()
+	// Graceful Shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		chatNode.Run()
+	}()
+
+	<-stop
+	fmt.Println("\nReceived interrupt, shutting down...")
+	chatNode.Shutdown()
+	fmt.Println("Graceful shutdown complete.")
 }
 
 func getEnvInt(key string, fallback int) int {

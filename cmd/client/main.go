@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"distributed-chat/internal/crypto"
 	"distributed-chat/internal/protocol"
 	"encoding/base64"
@@ -9,7 +10,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +25,10 @@ func main() {
 	secretKey := flag.String("key", "", "Secret key for E2EE (optional)")
 	flag.Parse()
 
-	conn, err := net.Dial("tcp", *serverAddr)
+	// TLS Dial
+	// In production, we would load the CA cert. For local dev with self-signed, we skip verify.
+	conf := &tls.Config{InsecureSkipVerify: true}
+	conn, err := tls.Dial("tcp", *serverAddr, conf)
 	if err != nil {
 		log.Fatalf("Failed to connect to server: %v", err)
 	}
