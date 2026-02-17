@@ -7,6 +7,13 @@ pkill server
 echo "Building..."
 make build
 
+# Ensure Certs exist
+if [ ! -f server.crt ] || [ ! -f server.key ]; then
+    echo "Generating TLS certificates..."
+    chmod +x scripts/gen_certs.sh
+    ./scripts/gen_certs.sh
+fi
+
 # Start Node 1
 echo "Starting Node 1 on :8080 (SSH :2222)"
 ./bin/server -port 8080 -ssh 2222 &
