@@ -91,7 +91,20 @@ func (n *Node) Join(peerAddrs []string) {
 	for _, addr := range peerAddrs {
 		go func(address string) {
 			// TLS Dial
-			conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) // TODO: Use proper CA for verify
+			// Use the Node's TLS config (which has RootCAs loaded) to verify the peer
+			// But wait, n.tlsConfig is for LISTENING (Server certs).
+			// We need a Client Config.
+			// Ideally we passed a full config that has RootCAs in it.
+			// Let's create a client config derived from n.tlsConfig's RootCAs
+
+			clientConfig := &tls.Config{
+				RootCAs: n.tlsConfig.RootCAs,
+				// If we want mTLS, we also set Certificates: n.tlsConfig.Certificates
+				// For now, just verification:
+				ServerName: "localhost", // Since our cert is for localhost. In prod, address hostname.
+			}
+
+			conn, err := tls.Dial("tcp", address, clientConfig)
 			if err != nil {
 				log.Printf("Failed to connect to peer %s: %v", address, err)
 				return

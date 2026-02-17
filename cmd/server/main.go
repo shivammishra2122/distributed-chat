@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"distributed-chat/internal/node"
 	sshserver "distributed-chat/internal/ssh"
 	"flag"
@@ -43,7 +44,19 @@ func main() {
 		log.Fatalf("Failed to load TLS keys: %v\nRun ./scripts/gen_certs.sh first!", err)
 	}
 
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	// Load CA Cert for verifying peers (and clients if mTLS)
+	caCert, err := os.ReadFile("ca.crt")
+	if err != nil {
+		log.Fatalf("Failed to load CA cert: %v", err)
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientCAs:    caCertPool,
+		RootCAs:      caCertPool,
+	}
 
 	// Initialize and run the node
 	chatNode := node.NewNode(*port, tlsConfig)
