@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
 	"distributed-chat/internal/crypto"
 	"distributed-chat/internal/protocol"
 	"encoding/base64"
@@ -26,8 +27,18 @@ func main() {
 	flag.Parse()
 
 	// TLS Dial
-	// In production, we would load the CA cert. For local dev with self-signed, we skip verify.
-	conf := &tls.Config{InsecureSkipVerify: true}
+	// Load CA Cert to verify server
+	caCert, err := os.ReadFile("ca.crt")
+	if err != nil {
+		log.Fatalf("Failed to load CA cert: %v\nRun ./scripts/gen_certs.sh first!", err)
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	conf := &tls.Config{
+		RootCAs: caCertPool,
+	}
+
 	conn, err := tls.Dial("tcp", *serverAddr, conf)
 	if err != nil {
 		log.Fatalf("Failed to connect to server: %v", err)

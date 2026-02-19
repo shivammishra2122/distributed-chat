@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -77,6 +79,13 @@ func main() {
 
 	// Start SSH Server
 	go sshserver.StartServer(*sshPort, chatNode)
+
+	// Start Metrics Server
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Fatal(http.ListenAndServe(":2112", nil))
+	}()
+	fmt.Println("📊 Metrics exposed at http://localhost:2112/metrics")
 
 	// Graceful Shutdown
 	stop := make(chan os.Signal, 1)

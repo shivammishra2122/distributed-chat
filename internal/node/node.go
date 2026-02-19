@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"distributed-chat/internal/auth"
 	"distributed-chat/internal/crypto"
+	"distributed-chat/internal/metrics"
 	"distributed-chat/internal/protocol"
 	"distributed-chat/internal/storage"
 	"encoding/json"
@@ -124,11 +125,8 @@ func (n *Node) Join(peerAddrs []string) {
 
 			n.mu.Lock()
 			n.peers[conn] = time.Now()
-			// content of handshake on connect? No, wait for their handshake?
-			// Actually we need to wait for their handshake to know THEIR ID.
-			// This logic handles SENDING.
-			// Receiving logic tracks `n.peerIDs`.
 			n.mu.Unlock()
+			metrics.ActivePeers.Inc() // Metric
 			// We need to pass the decoder to handlePeerMessage
 			decoder := protocol.NewDecoder(conn)
 			go n.handlePeerMessage(conn, decoder)
@@ -418,6 +416,7 @@ func (n *Node) handleMessages() {
 			n.mu.Lock()
 			n.clients[reg.Conn] = reg // Store the whole struct
 			n.mu.Unlock()
+			metrics.ConnectedClients.Inc() // Metric
 			log.Printf("Active Member Joined: %s (%s)", reg.User, reg.Conn.RemoteAddr())
 
 			// Broadcast Join Message
@@ -435,6 +434,7 @@ func (n *Node) handleMessages() {
 				delete(n.clients, conn)
 				close(client.Send) // Close channel to stop writePump
 				conn.Close()
+				metrics.ConnectedClients.Dec() // Metric
 				log.Printf("Client disconnected: %s (%s)", conn.RemoteAddr(), client.User)
 
 				// Broadcast Leave
@@ -455,6 +455,7 @@ func (n *Node) handleMessages() {
 			n.mu.Unlock()
 
 		case msg := <-n.broadcast:
+			metrics.MessagesTotal.Inc() // Metric
 			// Save message to disk (persistence) across all nodes that route it
 			if msg.Type == protocol.MsgTypeChat {
 				if err := n.storage.Save(msg); err != nil {
@@ -471,6 +472,7 @@ func (n *Node) handleMessages() {
 
 func (n *Node) handlePeerMessage(conn net.Conn, decoder *protocol.Decoder) {
 	defer conn.Close()
+	defer metrics.ActivePeers.Dec() // Metric
 	for {
 		msg, err := decoder.Decode()
 		if err != nil {
@@ -592,6 +594,7 @@ func (n *Node) handleConnection(conn net.Conn) {
 			n.peers[conn] = time.Now()
 			n.peerIDs[conn] = peerPort
 			n.mu.Unlock()
+			metrics.ActivePeers.Inc() // Metric
 
 			// Trigger History Sync
 			// ... (existing sync req) ...
