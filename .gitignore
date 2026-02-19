@@ -1,13 +1,28 @@
 # Binaries
 bin/
+server
 *.exe
 *.dll
 *.so
 *.dylib
 
+# Data Files
+*.aof
+*.snapshot
+users.json
+metrics.log
+
+# TLS Certificates & Keys (NEVER commit these)
+*.key
+*.crt
+*.pem
+*.csr
+
+# Environment
+.env
+
 # Logs
 *.log
-users.json
 
 # IDE
 .vscode/
@@ -16,6 +31,4 @@ users.json
 
 # OS
 .DS_Store
-*.snapshot
-.env
-server
+Thumbs.db
