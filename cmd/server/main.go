@@ -30,6 +30,7 @@ func main() {
 	defaultPort := getEnvInt("PORT", 8080)
 	defaultSSH := getEnvInt("SSH_PORT", 2222)
 	defaultAPI := getEnvInt("API_PORT", 8090)
+	defaultMetrics := getEnvInt("METRICS_PORT", 2112)
 	defaultPeers := os.Getenv("PEERS")
 	secretKey := os.Getenv("SECRET_KEY")
 
@@ -38,6 +39,7 @@ func main() {
 	peers := flag.String("peers", defaultPeers, "Comma-separated list of peer addresses")
 	sshPort := flag.Int("ssh", defaultSSH, "SSH Port to listen on")
 	apiPort := flag.Int("api", defaultAPI, "REST API port")
+	metricsPort := flag.Int("metrics", defaultMetrics, "Prometheus metrics port")
 	flag.Parse()
 
 	fmt.Printf("Starting Chat Server on port %d...\n", *port)
@@ -89,9 +91,10 @@ func main() {
 	// Start Metrics Server
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		log.Fatal(http.ListenAndServe(":2112", nil))
+		metricsAddr := fmt.Sprintf(":%d", *metricsPort)
+		log.Fatal(http.ListenAndServe(metricsAddr, nil))
 	}()
-	fmt.Println("📊 Metrics exposed at http://localhost:2112/metrics")
+	fmt.Printf("📊 Metrics exposed at http://localhost:%d/metrics\n", *metricsPort)
 
 	// Graceful Shutdown
 	stop := make(chan os.Signal, 1)

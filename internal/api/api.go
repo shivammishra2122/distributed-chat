@@ -7,44 +7,87 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
 
-// Server provides a REST API for the chat node
+// Server provides an authenticated REST API for the chat node
 type Server struct {
-	node *node.Node
-	port int
+	node   *node.Node
+	port   int
+	apiKey string
 }
 
-// NewServer creates a new API server
+// NewServer creates a new API server. Reads API_KEY from env or generates one.
 func NewServer(n *node.Node, port int) *Server {
-	return &Server{node: n, port: port}
+	apiKey := os.Getenv("API_KEY")
+	if apiKey == "" {
+		apiKey = protocol.GenerateID() + protocol.GenerateID() // 32 hex chars
+		log.Printf("⚠️  No API_KEY set. Generated ephemeral key: %s", apiKey)
+		log.Printf("   Set API_KEY env var or pass it to clients for persistent auth.")
+	}
+
+	return &Server{node: n, port: port, apiKey: apiKey}
 }
 
-// Start begins listening on the configured port
+// authMiddleware validates the API key from the Authorization header
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Allow health check without auth
+		if r.URL.Path == "/api/health" && r.Method == http.MethodGet {
+			next(w, r)
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			auth = r.URL.Query().Get("api_key")
+		}
+
+		expectedAuth := "Bearer " + s.apiKey
+		if auth != expectedAuth && auth != s.apiKey {
+			http.Error(w, `{"error":"unauthorized","hint":"Set Authorization: Bearer <API_KEY> header"}`, http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
+// Start begins listening on the configured port with timeouts
 func (s *Server) Start() {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/message", s.handleMessage)
-	mux.HandleFunc("/api/channels", s.handleChannels)
-	mux.HandleFunc("/api/channels/", s.handleChannelHistory) // /api/channels/{name}/history
-	mux.HandleFunc("/api/users", s.handleUsers)
-	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/search", s.handleSearch)
+	mux.HandleFunc("/api/message", s.authMiddleware(s.handleMessage))
+	mux.HandleFunc("/api/channels", s.authMiddleware(s.handleChannels))
+	mux.HandleFunc("/api/channels/", s.authMiddleware(s.handleChannelHistory))
+	mux.HandleFunc("/api/users", s.authMiddleware(s.handleUsers))
+	mux.HandleFunc("/api/health", s.handleHealth) // No auth required
+	mux.HandleFunc("/api/search", s.authMiddleware(s.handleSearch))
 
 	addr := fmt.Sprintf(":%d", s.port)
 	log.Printf("🌐 REST API listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+
+	server := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 
 // POST /api/message
-// Body: {"content": "hello", "sender": "bot", "channel": "general"}
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Limit request body size
+	r.Body = http.MaxBytesReader(w, r.Body, protocol.MaxMessageSize)
 
 	var req struct {
 		Content   string `json:"content"`
@@ -54,12 +97,17 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		http.Error(w, "Invalid JSON or body too large", http.StatusBadRequest)
 		return
 	}
 
 	if req.Content == "" || req.Sender == "" {
-		http.Error(w, "content and sender are required", http.StatusBadRequest)
+		http.Error(w, `{"error":"content and sender are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Content) > protocol.MaxMessageSize {
+		http.Error(w, `{"error":"content exceeds maximum size"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -81,6 +129,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	s.node.InjectMessage(msg)
 
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":     "sent",
 		"message_id": msg.ID,
@@ -106,7 +155,6 @@ func (s *Server) handleChannelHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse channel name from path: /api/channels/{name}/history
 	path := strings.TrimPrefix(r.URL.Path, "/api/channels/")
 	parts := strings.Split(path, "/")
 	if len(parts) < 1 || parts[0] == "" {
@@ -122,6 +170,10 @@ func (s *Server) handleChannelHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	if o := r.URL.Query().Get("offset"); o != "" {
 		fmt.Sscanf(o, "%d", &offset)
+	}
+	// Cap limit
+	if limit > 200 {
+		limit = 200
 	}
 
 	msgs, total := s.node.GetStorage().GetChannelMessages(channelName, limit, offset)
@@ -152,7 +204,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/health
+// GET /api/health (no auth required)
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -176,7 +228,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query().Get("q")
 	if query == "" {
-		http.Error(w, "query parameter 'q' is required", http.StatusBadRequest)
+		http.Error(w, `{"error":"query parameter 'q' is required"}`, http.StatusBadRequest)
 		return
 	}
 

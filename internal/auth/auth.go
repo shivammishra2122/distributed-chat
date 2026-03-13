@@ -3,10 +3,13 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/subtle"
+	"distributed-chat/internal/fileutil"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,20 +20,24 @@ import (
 // UserProfile contains extended user information
 type UserProfile struct {
 	PasswordHash string    `json:"password_hash"`
-	Role         string    `json:"role"`           // admin, member
+	Role         string    `json:"role"`                   // admin, member
 	DisplayName  string    `json:"display_name,omitempty"`
-	Status       string    `json:"status,omitempty"` // online, away, dnd, idle, offline, muted, banned
+	Status       string    `json:"status,omitempty"`       // online, away, dnd, idle, offline, muted, banned
 	LastSeen     time.Time `json:"last_seen,omitempty"`
 }
 
 // Authenticator handles user validation
 type Authenticator struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	users map[string]*UserProfile
 	file  string
+	dirty bool // track if save is needed
 }
 
-// NewAuthenticator creates a new instance with a default set of users
+// Username validation: 2-32 chars, alphanumeric + underscore/dash
+var validUsername = regexp.MustCompile(`^[a-zA-Z0-9_-]{2,32}$`)
+
+// NewAuthenticator creates a new instance
 func NewAuthenticator() *Authenticator {
 	a := &Authenticator{
 		users: make(map[string]*UserProfile),
@@ -38,13 +45,18 @@ func NewAuthenticator() *Authenticator {
 	}
 
 	if err := a.load(); err != nil {
-		a.Register("admin", "admin123")
-		a.SetRole("admin", "admin")
-		a.Register("Alice", "secret")
-		a.Register("Bob", "secret")
-		a.save()
+		log.Printf("No existing users.json found, starting fresh. First registered user gets admin role.")
+		// No hardcoded default credentials — first user to register gets admin
 	}
 	return a
+}
+
+// ValidateUsername checks if a username meets requirements
+func ValidateUsername(username string) error {
+	if !validUsername.MatchString(username) {
+		return fmt.Errorf("username must be 2-32 characters, alphanumeric/underscore/dash only")
+	}
+	return nil
 }
 
 // Check validates credentials against stored hash.
@@ -54,6 +66,8 @@ func (a *Authenticator) Check(username, password string) bool {
 
 	profile, ok := a.users[username]
 	if !ok {
+		// Constant-time comparison even for non-existent users to prevent timing attacks
+		HashPassword("dummy-password-for-timing")
 		return false
 	}
 
@@ -70,13 +84,21 @@ func (a *Authenticator) Check(username, password string) bool {
 	if match {
 		profile.LastSeen = time.Now()
 		profile.Status = "online"
-		a.save()
+		a.dirty = true
+		a.saveIfDirty()
 	}
 	return match
 }
 
-// Register adds a new user with hashed password. Returns false if user already exists.
+// Register adds a new user with hashed password. Returns error on failure.
 func (a *Authenticator) Register(username, password string) bool {
+	if err := ValidateUsername(username); err != nil {
+		return false
+	}
+	if len(password) < 4 {
+		return false
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -89,14 +111,21 @@ func (a *Authenticator) Register(username, password string) bool {
 		return false
 	}
 
+	// First user gets admin role
+	role := "member"
+	if len(a.users) == 0 {
+		role = "admin"
+	}
+
 	a.users[username] = &UserProfile{
 		PasswordHash: hash,
-		Role:         "member",
+		Role:         role,
 		DisplayName:  username,
 		Status:       "offline",
 		LastSeen:     time.Now(),
 	}
-	a.save()
+	a.dirty = true
+	a.saveIfDirty()
 	return true
 }
 
@@ -107,14 +136,15 @@ func (a *Authenticator) SetRole(username, role string) {
 
 	if profile, ok := a.users[username]; ok {
 		profile.Role = role
-		a.save()
+		a.dirty = true
+		a.saveIfDirty()
 	}
 }
 
 // GetRole returns the role for a user
 func (a *Authenticator) GetRole(username string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 
 	if profile, ok := a.users[username]; ok {
 		return profile.Role
@@ -130,14 +160,15 @@ func (a *Authenticator) SetStatus(username, status string) {
 	if profile, ok := a.users[username]; ok {
 		profile.Status = status
 		profile.LastSeen = time.Now()
-		a.save()
+		a.dirty = true
+		a.saveIfDirty()
 	}
 }
 
 // GetStatus returns the status for a user
 func (a *Authenticator) GetStatus(username string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 
 	if profile, ok := a.users[username]; ok {
 		return profile.Status
@@ -147,8 +178,8 @@ func (a *Authenticator) GetStatus(username string) string {
 
 // GetAllProfiles returns a copy of all user profiles (without passwords)
 func (a *Authenticator) GetAllProfiles() map[string]map[string]interface{} {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 
 	result := make(map[string]map[string]interface{})
 	for name, profile := range a.users {
@@ -164,18 +195,26 @@ func (a *Authenticator) GetAllProfiles() map[string]map[string]interface{} {
 
 // UserExists checks if a username is registered
 func (a *Authenticator) UserExists(username string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	_, ok := a.users[username]
 	return ok
 }
 
-func (a *Authenticator) save() error {
+func (a *Authenticator) saveIfDirty() {
+	if !a.dirty {
+		return
+	}
 	data, err := json.MarshalIndent(a.users, "", "  ")
 	if err != nil {
-		return err
+		log.Printf("Error marshaling users: %v", err)
+		return
 	}
-	return os.WriteFile(a.file, data, 0644)
+	if err := fileutil.AtomicWriteFile(a.file, data, 0600); err != nil {
+		log.Printf("Error saving users: %v", err)
+		return
+	}
+	a.dirty = false
 }
 
 func (a *Authenticator) load() error {
@@ -187,7 +226,6 @@ func (a *Authenticator) load() error {
 	// Try new format first (UserProfile)
 	var profiles map[string]*UserProfile
 	if err := json.Unmarshal(data, &profiles); err == nil {
-		// Check if it's new format by inspecting first value
 		for _, v := range profiles {
 			if v.PasswordHash != "" {
 				a.users = profiles
@@ -217,7 +255,8 @@ func (a *Authenticator) load() error {
 			LastSeen:     time.Now(),
 		}
 	}
-	a.save()
+	a.dirty = true
+	a.saveIfDirty()
 	return nil
 }
 
@@ -244,7 +283,7 @@ const (
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, SaltLen)
 	if _, err := rand.Read(salt); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to generate salt: %w", err)
 	}
 
 	hash := argon2.IDKey([]byte(password), salt, ArgonTime, ArgonMemory, ArgonThreads, ArgonKeyLen)

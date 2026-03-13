@@ -6,8 +6,11 @@ services:
     ports:
       - "8080:8080" # Chat Protocol
       - "2222:2222" # SSH Access
+      - "8090:8090" # REST API
+      - "2112:2112" # Prometheus Metrics
     volumes:
       - ./data:/data # Persist snapshots to host
     env_file:
       - .env
     command: [ "server" ]
+

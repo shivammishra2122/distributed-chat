@@ -16,7 +16,7 @@ type Storage struct {
 	messages map[string][]protocol.Message // channel -> messages
 	allMsgs  []protocol.Message           // flat list for global search
 	capacity int
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	aofFile  *os.File
 	encoder  *json.Encoder
 }
@@ -25,7 +25,6 @@ type Storage struct {
 func NewStorage(capacity int, dataDir string, port int) *Storage {
 	filename := fmt.Sprintf("%s/node-%d.aof", dataDir, port)
 
-	// Open AOF file for appending, create if not exists
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Failed to open AOF file %s: %v", filename, err)
@@ -54,9 +53,13 @@ func (s *Storage) Save(msg protocol.Message) error {
 	ch := s.normalizeChannel(msg.Channel)
 	msg.Channel = ch
 
-	// Assign ID if missing
 	if msg.ID == "" {
 		msg.ID = protocol.GenerateID()
+	}
+
+	// Enforce max content size
+	if len(msg.Content) > protocol.MaxMessageSize {
+		return fmt.Errorf("message content exceeds maximum size of %d bytes", protocol.MaxMessageSize)
 	}
 
 	// 1. Append to channel index
@@ -90,8 +93,8 @@ func (s *Storage) Close() error {
 
 // GetLastTimestamp returns the timestamp of the last message in memory
 func (s *Storage) GetLastTimestamp() (time.Time, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	if len(s.allMsgs) == 0 {
 		return time.Time{}, nil
@@ -100,8 +103,8 @@ func (s *Storage) GetLastTimestamp() (time.Time, error) {
 }
 
 func (s *Storage) GetMessagesAfter(t time.Time) ([]protocol.Message, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var results []protocol.Message
 	for _, msg := range s.allMsgs {
@@ -114,8 +117,8 @@ func (s *Storage) GetMessagesAfter(t time.Time) ([]protocol.Message, error) {
 
 // GetRecentMessages returns the last `count` messages across all channels.
 func (s *Storage) GetRecentMessages(count int) ([]protocol.Message, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	total := len(s.allMsgs)
 	if total == 0 {
@@ -125,13 +128,16 @@ func (s *Storage) GetRecentMessages(count int) ([]protocol.Message, error) {
 	if count > total {
 		count = total
 	}
-	return s.allMsgs[total-count:], nil
+	// Return a copy to prevent data races
+	result := make([]protocol.Message, count)
+	copy(result, s.allMsgs[total-count:])
+	return result, nil
 }
 
 // GetChannelMessages returns paginated messages for a given channel.
 func (s *Storage) GetChannelMessages(channel string, limit, offset int) ([]protocol.Message, int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	ch := s.normalizeChannel(channel)
 	msgs := s.messages[ch]
@@ -140,7 +146,6 @@ func (s *Storage) GetChannelMessages(channel string, limit, offset int) ([]proto
 		return nil, 0
 	}
 
-	// Return from end (newest last), offset from the end
 	start := total - offset - limit
 	end := total - offset
 	if start < 0 {
@@ -152,13 +157,16 @@ func (s *Storage) GetChannelMessages(channel string, limit, offset int) ([]proto
 	if end > total {
 		end = total
 	}
-	return msgs[start:end], total
+	// Return copy
+	result := make([]protocol.Message, end-start)
+	copy(result, msgs[start:end])
+	return result, total
 }
 
 // SearchMessages returns messages whose Content contains the query string.
 func (s *Storage) SearchMessages(query string) []protocol.Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	query = strings.ToLower(query)
 	var results []protocol.Message
@@ -167,7 +175,6 @@ func (s *Storage) SearchMessages(query string) []protocol.Message {
 			results = append(results, msg)
 		}
 	}
-	// Cap results
 	if len(results) > 100 {
 		results = results[len(results)-100:]
 	}
@@ -176,8 +183,8 @@ func (s *Storage) SearchMessages(query string) []protocol.Message {
 
 // GetMessageByID finds a single message by its ID.
 func (s *Storage) GetMessageByID(id string) *protocol.Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	for i := len(s.allMsgs) - 1; i >= 0; i-- {
 		if s.allMsgs[i].ID == id {
@@ -197,7 +204,6 @@ func (s *Storage) UpdateMessage(id, newContent string) bool {
 		if s.allMsgs[i].ID == id {
 			s.allMsgs[i].Content = newContent
 			s.allMsgs[i].Edited = true
-			// Also update in channel index
 			ch := s.normalizeChannel(s.allMsgs[i].Channel)
 			for j := range s.messages[ch] {
 				if s.messages[ch][j].ID == id {
@@ -213,21 +219,21 @@ func (s *Storage) UpdateMessage(id, newContent string) bool {
 }
 
 // DeleteMessage removes a message by ID from memory. Returns true if found.
+// Uses order-preserving deletion to maintain chronological ordering.
 func (s *Storage) DeleteMessage(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	found := false
-	// Remove from flat list
+	// Remove from flat list (order-preserving)
 	for i := range s.allMsgs {
 		if s.allMsgs[i].ID == id {
 			ch := s.normalizeChannel(s.allMsgs[i].Channel)
 			s.allMsgs = append(s.allMsgs[:i], s.allMsgs[i+1:]...)
-			// Remove from channel index
+			// Remove from channel index (order-preserving)
 			for j := range s.messages[ch] {
 				if s.messages[ch][j].ID == id {
-					s.messages[ch][j] = s.messages[ch][len(s.messages[ch])-1]
-					s.messages[ch] = s.messages[ch][:len(s.messages[ch])-1]
+					s.messages[ch] = append(s.messages[ch][:j], s.messages[ch][j+1:]...)
 					break
 				}
 			}
@@ -248,6 +254,12 @@ func (s *Storage) AddReaction(id, emoji, user string) bool {
 			if s.allMsgs[i].Reactions == nil {
 				s.allMsgs[i].Reactions = make(map[string][]string)
 			}
+			// Prevent duplicate reactions from same user
+			for _, existing := range s.allMsgs[i].Reactions[emoji] {
+				if existing == user {
+					return true // Already reacted
+				}
+			}
 			s.allMsgs[i].Reactions[emoji] = append(s.allMsgs[i].Reactions[emoji], user)
 			// Also update channel index
 			ch := s.normalizeChannel(s.allMsgs[i].Channel)
@@ -256,7 +268,7 @@ func (s *Storage) AddReaction(id, emoji, user string) bool {
 					if s.messages[ch][j].Reactions == nil {
 						s.messages[ch][j].Reactions = make(map[string][]string)
 					}
-					s.messages[ch][j].Reactions[emoji] = append(s.messages[ch][j].Reactions[emoji], user)
+					s.messages[ch][j].Reactions[emoji] = s.allMsgs[i].Reactions[emoji]
 					break
 				}
 			}
@@ -266,6 +278,57 @@ func (s *Storage) AddReaction(id, emoji, user string) bool {
 	return false
 }
 
+// CompactAOF rewrites the AOF file with only current in-memory messages.
+// This should be called periodically to prevent unbounded disk growth.
+func (s *Storage) CompactAOF(dataDir string, port int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	filename := fmt.Sprintf("%s/node-%d.aof", dataDir, port)
+	tmpFile := filename + ".compact"
+
+	f, err := os.Create(tmpFile)
+	if err != nil {
+		return fmt.Errorf("failed to create compact file: %w", err)
+	}
+
+	encoder := json.NewEncoder(f)
+	for _, msg := range s.allMsgs {
+		if err := encoder.Encode(msg); err != nil {
+			f.Close()
+			os.Remove(tmpFile)
+			return fmt.Errorf("failed to write during compaction: %w", err)
+		}
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpFile)
+		return err
+	}
+	f.Close()
+
+	// Close current AOF and replace
+	if s.aofFile != nil {
+		s.aofFile.Close()
+	}
+
+	if err := os.Rename(tmpFile, filename); err != nil {
+		return fmt.Errorf("failed to rename compacted AOF: %w", err)
+	}
+
+	// Reopen for appending
+	newFile, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to reopen AOF: %w", err)
+	}
+	s.aofFile = newFile
+	s.encoder = json.NewEncoder(newFile)
+
+	log.Printf("AOF compacted: %d messages written", len(s.allMsgs))
+	return nil
+}
+
 // LoadAOF reads the Append-Only File line by line to rebuild memory state
 func (s *Storage) LoadAOF(dataDir string, port int) error {
 	filename := fmt.Sprintf("%s/node-%d.aof", dataDir, port)
@@ -273,13 +336,15 @@ func (s *Storage) LoadAOF(dataDir string, port int) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // New node, no history
+			return nil
 		}
 		return err
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	// Increase scanner buffer for large messages
+	scanner.Buffer(make([]byte, 0, 64*1024), protocol.MaxMessageSize+4096)
 	var loadedMessages []protocol.Message
 
 	for scanner.Scan() {
@@ -292,7 +357,6 @@ func (s *Storage) LoadAOF(dataDir string, port int) error {
 	}
 
 	s.mu.Lock()
-	// Rebuild both flat list and channel index
 	if len(loadedMessages) > s.capacity {
 		loadedMessages = loadedMessages[len(loadedMessages)-s.capacity:]
 	}

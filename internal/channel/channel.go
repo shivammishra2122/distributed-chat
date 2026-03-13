@@ -1,9 +1,12 @@
 package channel
 
 import (
+	"distributed-chat/internal/fileutil"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 )
@@ -14,6 +17,17 @@ const (
 	RoleModerator = "moderator"
 	RoleMember    = "member"
 )
+
+// Channel name validation: 2-32 chars, lowercase alphanumeric + underscore/dash
+var validChannelName = regexp.MustCompile(`^[a-z0-9_-]{2,32}$`)
+
+// ValidateChannelName checks if a channel name is valid
+func ValidateChannelName(name string) error {
+	if !validChannelName.MatchString(name) {
+		return fmt.Errorf("channel name must be 2-32 lowercase characters, alphanumeric/underscore/dash only")
+	}
+	return nil
+}
 
 // Channel represents a chat room
 type Channel struct {
@@ -28,7 +42,7 @@ type Channel struct {
 
 // Manager manages all channels
 type Manager struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	channels map[string]*Channel
 	file     string
 }
@@ -54,8 +68,12 @@ func NewManager() *Manager {
 	return m
 }
 
-// Create creates a new channel. Returns false if it already exists.
+// Create creates a new channel. Returns error string if failed.
 func (m *Manager) Create(name, createdBy string, isPrivate bool) bool {
+	if err := ValidateChannelName(name); err != nil {
+		return false
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -110,8 +128,8 @@ func (m *Manager) Leave(channelName, user string) bool {
 
 // IsMember checks if a user is in a channel
 func (m *Manager) IsMember(channelName, user string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	ch, exists := m.channels[channelName]
 	if !exists {
@@ -123,8 +141,8 @@ func (m *Manager) IsMember(channelName, user string) bool {
 
 // GetRole returns the role of a user in a channel
 func (m *Manager) GetRole(channelName, user string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	ch, exists := m.channels[channelName]
 	if !exists {
@@ -163,8 +181,8 @@ func (m *Manager) SetDescription(channelName, desc string) bool {
 
 // List returns all public channels (or all if includePrivate)
 func (m *Manager) List(includePrivate bool) []Channel {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	var result []Channel
 	for _, ch := range m.channels {
@@ -177,8 +195,8 @@ func (m *Manager) List(includePrivate bool) []Channel {
 
 // ListUserChannels returns all channels a user is a member of
 func (m *Manager) ListUserChannels(user string) []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	var result []string
 	for name, ch := range m.channels {
@@ -191,22 +209,21 @@ func (m *Manager) ListUserChannels(user string) []string {
 
 // Exists checks if a channel exists
 func (m *Manager) Exists(name string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	_, exists := m.channels[name]
 	return exists
 }
 
 // GetMembers returns members of a channel
 func (m *Manager) GetMembers(channelName string) map[string]string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	ch, exists := m.channels[channelName]
 	if !exists {
 		return nil
 	}
-	// Return copy
 	result := make(map[string]string)
 	for k, v := range ch.Members {
 		result[k] = v
@@ -216,15 +233,15 @@ func (m *Manager) GetMembers(channelName string) map[string]string {
 
 // Get returns a copy of a channel
 func (m *Manager) Get(name string) *Channel {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	ch, exists := m.channels[name]
 	if !exists {
 		return nil
 	}
-	copy := *ch
-	return &copy
+	cp := *ch
+	return &cp
 }
 
 func (m *Manager) save() error {
@@ -232,7 +249,7 @@ func (m *Manager) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.file, data, 0644)
+	return fileutil.AtomicWriteFile(m.file, data, 0644)
 }
 
 func (m *Manager) load() error {

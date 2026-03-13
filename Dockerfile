@@ -1,6 +1,6 @@
 # Build Stage
 # Build Stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -26,12 +26,13 @@ WORKDIR /data
 # Copy binary to system bin (separated from data)
 COPY --from=builder /app/server /usr/local/bin/server
 
-# Expose ports
-EXPOSE 8080 2222
+# Expose ports: Chat, SSH, API
+EXPOSE 8080 2222 8090
 
 # Volume for snapshots (persistence)
 VOLUME /data
 
 # Default Command (since /usr/local/bin is in PATH)
 ENTRYPOINT ["server"]
-CMD ["-port", "8080", "-ssh", "2222"]
+CMD ["-port", "8080", "-ssh", "2222", "-api", "8090"]
+

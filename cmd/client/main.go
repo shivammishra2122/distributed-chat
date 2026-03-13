@@ -9,7 +9,7 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"io/ioutil"
+
 	"log"
 	"os"
 	"os/exec"
@@ -258,7 +258,7 @@ func main() {
 				filename := fmt.Sprintf("image_%d_%s.png", time.Now().Unix(), msg.Sender)
 				path := filepath.Join("downloads", filename)
 				os.MkdirAll("downloads", 0755)
-				if err := ioutil.WriteFile(path, data, 0644); err != nil {
+				if err := os.WriteFile(path, data, 0644); err != nil {
 					fmt.Printf("%s[Image] Failed to save file: %v%s\n", colorRed, err, colorReset)
 				} else {
 					fmt.Printf("%s📎 [%s] %s sent an image: Saved to %s%s\n",
@@ -302,7 +302,7 @@ func main() {
 		// Check for image command
 		if strings.HasPrefix(text, "/image ") {
 			path := strings.TrimPrefix(text, "/image ")
-			data, err := ioutil.ReadFile(path)
+			data, err := os.ReadFile(path)
 			if err != nil {
 				fmt.Printf("%sError reading file: %v%s\n", colorRed, err, colorReset)
 				continue

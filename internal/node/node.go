@@ -2,12 +2,14 @@ package node
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"distributed-chat/internal/auth"
 	"distributed-chat/internal/channel"
 	"distributed-chat/internal/crypto"
 	"distributed-chat/internal/metrics"
 	"distributed-chat/internal/protocol"
+	"distributed-chat/internal/ratelimit"
 	"distributed-chat/internal/storage"
 	"encoding/json"
 	"fmt"
@@ -37,10 +39,13 @@ type Node struct {
 	storage     *storage.Storage
 	auth        *auth.Authenticator
 	channels    *channel.Manager
+	limiter     *ratelimit.Limiter
 	broadcast   chan protocol.Message
 	register    chan ClientRegistration
 	unregister  chan net.Conn
-	mu          sync.Mutex
+	mu          sync.RWMutex
+	ctx         context.Context
+	cancel      context.CancelFunc
 
 	// Election State
 	isLeader bool
@@ -60,6 +65,8 @@ type Node struct {
 const (
 	HeartbeatInterval = 5 * time.Second
 	PeerTimeout       = 15 * time.Second
+	MaxClients        = 500
+	MaxPeers          = 50
 )
 
 func NewNode(port int, tlsConfig *tls.Config) *Node {
@@ -69,7 +76,9 @@ func NewNode(port int, tlsConfig *tls.Config) *Node {
 		log.Printf("Warning: Failed to load AOF: %v", err)
 	}
 
-	return &Node{
+	ctx, cancel := context.WithCancel(context.Background())
+
+	n := &Node{
 		port:        port,
 		clients:     make(map[net.Conn]ClientRegistration),
 		remoteUsers: make(map[string]bool),
@@ -78,6 +87,7 @@ func NewNode(port int, tlsConfig *tls.Config) *Node {
 		storage:     store,
 		auth:        auth.NewAuthenticator(),
 		channels:    channel.NewManager(),
+		limiter:     ratelimit.NewLimiter(10, 20), // 10 msg/sec, burst 20
 		broadcast:   make(chan protocol.Message),
 		register:    make(chan ClientRegistration),
 		unregister:  make(chan net.Conn),
@@ -85,7 +95,41 @@ func NewNode(port int, tlsConfig *tls.Config) *Node {
 		leaderID:    0,
 		tlsConfig:   tlsConfig,
 		startTime:   time.Now(),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
+
+	// Periodic AOF compaction (every 30 minutes)
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := store.CompactAOF(".", port); err != nil {
+					log.Printf("AOF compaction failed: %v", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Periodic rate limiter cleanup (every 5 minutes)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n.limiter.Cleanup(10 * time.Minute)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return n
 }
 
 func (n *Node) SetSSHKey(key string) {
@@ -109,8 +153,8 @@ func (n *Node) GetAuth() *auth.Authenticator {
 
 // GetNodeInfo returns info about this node for health checks
 func (n *Node) GetNodeInfo() map[string]interface{} {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 
 	peerList := make([]int, 0, len(n.peerIDs))
 	for _, id := range n.peerIDs {
@@ -118,13 +162,15 @@ func (n *Node) GetNodeInfo() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"port":       n.port,
-		"is_leader":  n.isLeader,
-		"leader_id":  n.leaderID,
-		"clients":    len(n.clients),
-		"peers":      len(n.peers),
-		"peer_ids":   peerList,
-		"uptime_sec": time.Since(n.startTime).Seconds(),
+		"port":        n.port,
+		"is_leader":   n.isLeader,
+		"leader_id":   n.leaderID,
+		"clients":     len(n.clients),
+		"max_clients": MaxClients,
+		"peers":       len(n.peers),
+		"max_peers":   MaxPeers,
+		"peer_ids":    peerList,
+		"uptime_sec":  time.Since(n.startTime).Seconds(),
 	}
 }
 
@@ -144,8 +190,8 @@ func (n *Node) InjectMessage(msg protocol.Message) {
 
 // GetOnlineUsers returns a list of currently connected usernames
 func (n *Node) GetOnlineUsers() []string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	var users []string
 	for _, c := range n.clients {
 		users = append(users, c.User)
@@ -305,7 +351,12 @@ func (a *SSHAdapterPipe) Write(b []byte) (int, error) {
 		if err == nil {
 			content = decrypted + " [E2EE]"
 		} else {
-			content = fmt.Sprintf("[Encrypted blob: %s...]", msg.Content[:10])
+			// Safe truncation to prevent panic on short content
+			preview := msg.Content
+			if len(preview) > 10 {
+				preview = preview[:10]
+			}
+			content = fmt.Sprintf("[Encrypted blob: %s...]", preview)
 		}
 	}
 
@@ -338,8 +389,8 @@ func (a *SSHAdapterPipe) SetWriteDeadline(t time.Time) error { return nil }
 
 // broadcastToClients sends to clients who are in the message's channel
 func (n *Node) broadcastToClients(msg protocol.Message) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 
 	for _, client := range n.clients {
 		// For DMs, only deliver to sender + recipient
@@ -616,6 +667,17 @@ func (n *Node) handlePeerMessage(conn net.Conn, decoder *protocol.Decoder) {
 }
 
 func (n *Node) handleConnection(conn net.Conn) {
+	// Connection limit check
+	n.mu.RLock()
+	clientCount := len(n.clients)
+	peerCount := len(n.peers)
+	n.mu.RUnlock()
+	if clientCount+peerCount >= MaxClients+MaxPeers {
+		log.Printf("Connection limit reached, rejecting %s", conn.RemoteAddr())
+		conn.Close()
+		return
+	}
+
 	decoder := protocol.NewDecoder(conn)
 
 	msg, err := decoder.Decode()
@@ -739,9 +801,9 @@ func (n *Node) CheckAuth(user, pass string) bool {
 
 // sendToClient sends a server message directly to a single client
 func (n *Node) sendToClient(conn net.Conn, content string) {
-	n.mu.Lock()
+	n.mu.RLock()
 	client, ok := n.clients[conn]
-	n.mu.Unlock()
+	n.mu.RUnlock()
 	if ok {
 		select {
 		case client.Send <- protocol.Message{
@@ -781,10 +843,22 @@ func (n *Node) handleClientLoop(conn net.Conn, decoder *protocol.Decoder) {
 			continue
 		}
 
-		// Set channel from client's active channel
-		n.mu.Lock()
+		// Rate limiting
+		n.mu.RLock()
 		client := n.clients[conn]
-		n.mu.Unlock()
+		n.mu.RUnlock()
+
+		if !n.limiter.Allow(client.User) {
+			n.sendToClient(conn, "⚠️ Rate limit exceeded. Slow down.")
+			continue
+		}
+
+		// Check if user is muted
+		if n.auth.GetStatus(client.User) == "muted" {
+			n.sendToClient(conn, "🔇 You are muted.")
+			continue
+		}
+
 		if msg.Channel == "" {
 			msg.Channel = client.Channel
 			if msg.Channel == "" {
@@ -800,10 +874,10 @@ func (n *Node) handleCommand(conn net.Conn, msg *protocol.Message, content strin
 	parts := strings.Fields(content)
 	cmd := parts[0]
 
-	n.mu.Lock()
+	n.mu.RLock()
 	client := n.clients[conn]
 	username := client.User
-	n.mu.Unlock()
+	n.mu.RUnlock()
 
 	switch cmd {
 
@@ -1238,13 +1312,21 @@ func (n *Node) handleCommand(conn net.Conn, msg *protocol.Message, content strin
 }
 
 func (n *Node) Shutdown() {
+	log.Println("Shutting down node...")
+
+	// Cancel context to stop all background goroutines
+	n.cancel()
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	log.Println("Shutting down node...")
-
 	if n.listener != nil {
 		n.listener.Close()
+	}
+
+	// Compact AOF before shutdown
+	if err := n.storage.CompactAOF(".", n.port); err != nil {
+		log.Printf("Final AOF compaction failed: %v", err)
 	}
 
 	if err := n.storage.Close(); err != nil {
