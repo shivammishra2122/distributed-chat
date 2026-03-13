@@ -23,4 +23,22 @@ var (
 		Name: "chat_active_peers",
 		Help: "The number of active peer connections in the mesh",
 	})
+
+	// ChannelsTotal tracks number of channels
+	ChannelsTotal = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "chat_channels_total",
+		Help: "The total number of chat channels",
+	})
+
+	// DirectMessagesTotal tracks DMs sent
+	DirectMessagesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "chat_direct_messages_total",
+		Help: "The total number of direct messages sent",
+	})
+
+	// APIRequestsTotal tracks REST API requests
+	APIRequestsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "chat_api_requests_total",
+		Help: "The total number of REST API requests",
+	})
 )

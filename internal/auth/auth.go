@@ -9,29 +9,37 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
 
+// UserProfile contains extended user information
+type UserProfile struct {
+	PasswordHash string    `json:"password_hash"`
+	Role         string    `json:"role"`           // admin, member
+	DisplayName  string    `json:"display_name,omitempty"`
+	Status       string    `json:"status,omitempty"` // online, away, dnd, idle, offline, muted, banned
+	LastSeen     time.Time `json:"last_seen,omitempty"`
+}
+
 // Authenticator handles user validation
 type Authenticator struct {
 	mu    sync.Mutex
-	users map[string]string // username -> hashed_password
+	users map[string]*UserProfile
 	file  string
 }
 
 // NewAuthenticator creates a new instance with a default set of users
 func NewAuthenticator() *Authenticator {
 	a := &Authenticator{
-		users: make(map[string]string),
+		users: make(map[string]*UserProfile),
 		file:  "users.json",
 	}
 
-	// Try to load
 	if err := a.load(); err != nil {
-		// If load fails (e.g. no file), init defaults
-		// Note: These are initial defaults. In production, meaningful defaults or empty init is preferred.
 		a.Register("admin", "admin123")
+		a.SetRole("admin", "admin")
 		a.Register("Alice", "secret")
 		a.Register("Bob", "secret")
 		a.save()
@@ -44,14 +52,25 @@ func (a *Authenticator) Check(username, password string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	storedHash, ok := a.users[username]
+	profile, ok := a.users[username]
 	if !ok {
 		return false
 	}
 
-	match, err := VerifyPassword(password, storedHash)
+	// Check if banned
+	if profile.Status == "banned" {
+		return false
+	}
+
+	match, err := VerifyPassword(password, profile.PasswordHash)
 	if err != nil {
 		return false
+	}
+
+	if match {
+		profile.LastSeen = time.Now()
+		profile.Status = "online"
+		a.save()
 	}
 	return match
 }
@@ -70,9 +89,85 @@ func (a *Authenticator) Register(username, password string) bool {
 		return false
 	}
 
-	a.users[username] = hash
+	a.users[username] = &UserProfile{
+		PasswordHash: hash,
+		Role:         "member",
+		DisplayName:  username,
+		Status:       "offline",
+		LastSeen:     time.Now(),
+	}
 	a.save()
 	return true
+}
+
+// SetRole sets the role for a user
+func (a *Authenticator) SetRole(username, role string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if profile, ok := a.users[username]; ok {
+		profile.Role = role
+		a.save()
+	}
+}
+
+// GetRole returns the role for a user
+func (a *Authenticator) GetRole(username string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if profile, ok := a.users[username]; ok {
+		return profile.Role
+	}
+	return "member"
+}
+
+// SetStatus sets the status for a user
+func (a *Authenticator) SetStatus(username, status string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if profile, ok := a.users[username]; ok {
+		profile.Status = status
+		profile.LastSeen = time.Now()
+		a.save()
+	}
+}
+
+// GetStatus returns the status for a user
+func (a *Authenticator) GetStatus(username string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if profile, ok := a.users[username]; ok {
+		return profile.Status
+	}
+	return ""
+}
+
+// GetAllProfiles returns a copy of all user profiles (without passwords)
+func (a *Authenticator) GetAllProfiles() map[string]map[string]interface{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	result := make(map[string]map[string]interface{})
+	for name, profile := range a.users {
+		result[name] = map[string]interface{}{
+			"role":         profile.Role,
+			"display_name": profile.DisplayName,
+			"status":       profile.Status,
+			"last_seen":    profile.LastSeen,
+		}
+	}
+	return result
+}
+
+// UserExists checks if a username is registered
+func (a *Authenticator) UserExists(username string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.users[username]
+	return ok
 }
 
 func (a *Authenticator) save() error {
@@ -88,7 +183,42 @@ func (a *Authenticator) load() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, &a.users)
+
+	// Try new format first (UserProfile)
+	var profiles map[string]*UserProfile
+	if err := json.Unmarshal(data, &profiles); err == nil {
+		// Check if it's new format by inspecting first value
+		for _, v := range profiles {
+			if v.PasswordHash != "" {
+				a.users = profiles
+				return nil
+			}
+			break
+		}
+	}
+
+	// Fallback to old format (username -> hash string)
+	var oldFormat map[string]string
+	if err := json.Unmarshal(data, &oldFormat); err != nil {
+		return err
+	}
+
+	// Migrate old format to new
+	for name, hash := range oldFormat {
+		role := "member"
+		if name == "admin" {
+			role = "admin"
+		}
+		a.users[name] = &UserProfile{
+			PasswordHash: hash,
+			Role:         role,
+			DisplayName:  name,
+			Status:       "offline",
+			LastSeen:     time.Now(),
+		}
+	}
+	a.save()
+	return nil
 }
 
 // ParseCredentials parses "user:pass" string
@@ -111,7 +241,6 @@ const (
 )
 
 // HashPassword generates an Argon2id hash of the password
-// Format: $argon2id$v=19$m=65536,t=1,p=4$salt$hash
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, SaltLen)
 	if _, err := rand.Read(salt); err != nil {

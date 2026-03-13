@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"distributed-chat/internal/api"
 	"distributed-chat/internal/node"
 	sshserver "distributed-chat/internal/ssh"
 	"flag"
@@ -22,13 +23,13 @@ import (
 func main() {
 	// 1. Load .env file (if exists)
 	if err := godotenv.Load(); err != nil {
-		// It's okay if .env doesn't exist (e.g. running in Docker/Cloud with real Env Vars)
-		// But if it does, it's loaded.
+		// It's okay if .env doesn't exist
 	}
 
 	// 2. Parse Environment Variables or Defaults
 	defaultPort := getEnvInt("PORT", 8080)
 	defaultSSH := getEnvInt("SSH_PORT", 2222)
+	defaultAPI := getEnvInt("API_PORT", 8090)
 	defaultPeers := os.Getenv("PEERS")
 	secretKey := os.Getenv("SECRET_KEY")
 
@@ -36,6 +37,7 @@ func main() {
 	port := flag.Int("port", defaultPort, "Port to listen on")
 	peers := flag.String("peers", defaultPeers, "Comma-separated list of peer addresses")
 	sshPort := flag.Int("ssh", defaultSSH, "SSH Port to listen on")
+	apiPort := flag.Int("api", defaultAPI, "REST API port")
 	flag.Parse()
 
 	fmt.Printf("Starting Chat Server on port %d...\n", *port)
@@ -46,7 +48,7 @@ func main() {
 		log.Fatalf("Failed to load TLS keys: %v\nRun ./scripts/gen_certs.sh first!", err)
 	}
 
-	// Load CA Cert for verifying peers (and clients if mTLS)
+	// Load CA Cert for verifying peers
 	caCert, err := os.ReadFile("ca.crt")
 	if err != nil {
 		log.Fatalf("Failed to load CA cert: %v", err)
@@ -79,6 +81,10 @@ func main() {
 
 	// Start SSH Server
 	go sshserver.StartServer(*sshPort, chatNode)
+
+	// Start REST API Server
+	apiServer := api.NewServer(chatNode, *apiPort)
+	go apiServer.Start()
 
 	// Start Metrics Server
 	go func() {

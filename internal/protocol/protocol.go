@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"time"
@@ -10,7 +12,7 @@ import (
 type MessageType int
 
 const (
-	MsgTypeChat MessageType = iota
+	MsgTypeChat          MessageType = iota
 	MsgTypeJoin
 	MsgTypeLeave
 	MsgTypePeerHandshake
@@ -21,16 +23,45 @@ const (
 	MsgTypeLogin
 	MsgTypeAuthResult
 	MsgTypeImage
-	MsgTypeRegister // New: Registration
-	MsgTypeUserSync // New: Exchange active user lists
+	MsgTypeRegister
+	MsgTypeUserSync
+	// New types
+	MsgTypeDirectMessage
+	MsgTypeEditMessage
+	MsgTypeDeleteMessage
+	MsgTypeReaction
+	MsgTypeTyping
+	MsgTypeStatusChange
+	MsgTypeChannelCreate
+	MsgTypeChannelJoin
+	MsgTypeChannelLeave
+	MsgTypeChannelList
+	MsgTypeAdminAction
+	MsgTypeHealthCheck
+	MsgTypeHistory
+	MsgTypeSearch
 )
 
 // Message represents the data structure exchanged between clients and nodes
 type Message struct {
-	Type      MessageType `json:"type"`
-	Sender    string      `json:"sender"`
-	Content   string      `json:"content"`
-	Timestamp time.Time   `json:"timestamp"`
+	Type      MessageType       `json:"type"`
+	ID        string            `json:"id,omitempty"`
+	Sender    string            `json:"sender"`
+	Content   string            `json:"content"`
+	Channel   string            `json:"channel,omitempty"`
+	Recipient string            `json:"recipient,omitempty"`
+	ReplyTo   string            `json:"reply_to,omitempty"`
+	Edited    bool              `json:"edited,omitempty"`
+	Reactions map[string][]string `json:"reactions,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	Timestamp time.Time         `json:"timestamp"`
+}
+
+// GenerateID creates a random 8-byte hex message ID
+func GenerateID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // SendMessage sends a JSON-encoded message to the writer
