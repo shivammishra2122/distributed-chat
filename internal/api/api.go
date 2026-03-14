@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"distributed-chat/internal/node"
 	"distributed-chat/internal/protocol"
 	"encoding/json"
@@ -14,13 +15,16 @@ import (
 
 // Server provides an authenticated REST API for the chat node
 type Server struct {
-	node   *node.Node
-	port   int
-	apiKey string
+	node    *node.Node
+	port    int
+	apiKey  string
+	certFile string
+	keyFile  string
 }
 
 // NewServer creates a new API server. Reads API_KEY from env or generates one.
-func NewServer(n *node.Node, port int) *Server {
+// certFile/keyFile are optional — if provided, the API uses HTTPS.
+func NewServer(n *node.Node, port int, certFile, keyFile string) *Server {
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
 		apiKey = protocol.GenerateID() + protocol.GenerateID() // 32 hex chars
@@ -29,7 +33,7 @@ func NewServer(n *node.Node, port int) *Server {
 		fmt.Fprintf(os.Stderr, "API_KEY=%s\n", apiKey)
 	}
 
-	return &Server{node: n, port: port, apiKey: apiKey}
+	return &Server{node: n, port: port, apiKey: apiKey, certFile: certFile, keyFile: keyFile}
 }
 
 // authMiddleware validates the API key from the Authorization header
@@ -46,8 +50,12 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			auth = r.URL.Query().Get("api_key")
 		}
 
-		expectedAuth := "Bearer " + s.apiKey
-		if auth != expectedAuth && auth != s.apiKey {
+		// Constant-time comparison to prevent timing attacks
+		bearerKey := "Bearer " + s.apiKey
+		bearerMatch := subtle.ConstantTimeCompare([]byte(auth), []byte(bearerKey)) == 1
+		directMatch := subtle.ConstantTimeCompare([]byte(auth), []byte(s.apiKey)) == 1
+
+		if !bearerMatch && !directMatch {
 			http.Error(w, `{"error":"unauthorized","hint":"Set Authorization: Bearer <API_KEY> header"}`, http.StatusUnauthorized)
 			return
 		}
@@ -68,7 +76,6 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/search", s.authMiddleware(s.handleSearch))
 
 	addr := fmt.Sprintf(":%d", s.port)
-	log.Printf("🌐 REST API listening on %s", addr)
 
 	server := &http.Server{
 		Addr:         addr,
@@ -77,7 +84,15 @@ func (s *Server) Start() {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	log.Fatal(server.ListenAndServe())
+
+	// Use HTTPS if TLS certs are available
+	if s.certFile != "" && s.keyFile != "" {
+		log.Printf("🔒 REST API listening on %s (HTTPS)", addr)
+		log.Fatal(server.ListenAndServeTLS(s.certFile, s.keyFile))
+	} else {
+		log.Printf("🌐 REST API listening on %s (HTTP — set certs for HTTPS)", addr)
+		log.Fatal(server.ListenAndServe())
+	}
 }
 
 // POST /api/message
@@ -102,9 +117,19 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Content == "" || req.Sender == "" {
-		http.Error(w, `{"error":"content and sender are required"}`, http.StatusBadRequest)
+	if req.Content == "" {
+		http.Error(w, `{"error":"content is required"}`, http.StatusBadRequest)
 		return
+	}
+
+	// Validate sender: must be a registered user, or tag as api-bot
+	if req.Sender == "" {
+		req.Sender = "api-bot"
+	} else {
+		// Verify sender is a real user
+		if s.node.GetAuth().GetRole(req.Sender) == "" {
+			req.Sender = "api-bot" // Don't allow impersonation of non-existent users either
+		}
 	}
 
 	if len(req.Content) > protocol.MaxMessageSize {

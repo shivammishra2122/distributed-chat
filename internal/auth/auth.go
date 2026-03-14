@@ -26,12 +26,24 @@ type UserProfile struct {
 	LastSeen     time.Time `json:"last_seen,omitempty"`
 }
 
+// loginAttempt tracks failed login attempts for brute-force protection
+type loginAttempt struct {
+	count    int
+	lockUntil time.Time
+}
+
+const (
+	maxLoginAttempts = 5
+	lockoutDuration  = 15 * time.Minute
+)
+
 // Authenticator handles user validation
 type Authenticator struct {
-	mu    sync.RWMutex
-	users map[string]*UserProfile
-	file  string
-	dirty bool // track if save is needed
+	mu             sync.RWMutex
+	users          map[string]*UserProfile
+	file           string
+	dirty          bool // track if save is needed
+	failedAttempts map[string]*loginAttempt // brute-force protection
 }
 
 // Username validation: 2-32 chars, alphanumeric + underscore/dash
@@ -40,13 +52,13 @@ var validUsername = regexp.MustCompile(`^[a-zA-Z0-9_-]{2,32}$`)
 // NewAuthenticator creates a new instance
 func NewAuthenticator() *Authenticator {
 	a := &Authenticator{
-		users: make(map[string]*UserProfile),
-		file:  "users.json",
+		users:          make(map[string]*UserProfile),
+		file:           "users.json",
+		failedAttempts: make(map[string]*loginAttempt),
 	}
 
 	if err := a.load(); err != nil {
 		log.Printf("No existing users.json found, starting fresh. First registered user gets admin role.")
-		// No hardcoded default credentials — first user to register gets admin
 	}
 	return a
 }
@@ -60,19 +72,34 @@ func ValidateUsername(username string) error {
 }
 
 // Check validates credentials against stored hash.
+// Returns false if credentials are wrong, user is banned, or account is locked out.
 func (a *Authenticator) Check(username, password string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	// Check brute-force lockout
+	if attempt, ok := a.failedAttempts[username]; ok {
+		if time.Now().Before(attempt.lockUntil) {
+			log.Printf("Login attempt for locked account: %s (locked until %s)", username, attempt.lockUntil.Format(time.Kitchen))
+			return false
+		}
+		// Lockout expired, reset
+		if attempt.count >= maxLoginAttempts {
+			attempt.count = 0
+		}
+	}
 
 	profile, ok := a.users[username]
 	if !ok {
 		// Constant-time comparison even for non-existent users to prevent timing attacks
 		HashPassword("dummy-password-for-timing")
+		a.recordFailedAttempt(username)
 		return false
 	}
 
 	// Check if banned
 	if profile.Status == "banned" {
+		log.Printf("Login attempt from banned user: %s", username)
 		return false
 	}
 
@@ -82,12 +109,31 @@ func (a *Authenticator) Check(username, password string) bool {
 	}
 
 	if match {
+		// Clear failed attempts on success
+		delete(a.failedAttempts, username)
 		profile.LastSeen = time.Now()
 		profile.Status = "online"
 		a.dirty = true
 		a.saveIfDirty()
+	} else {
+		a.recordFailedAttempt(username)
 	}
 	return match
+}
+
+// recordFailedAttempt tracks a failed login for brute-force protection.
+// Must be called while holding a.mu.
+func (a *Authenticator) recordFailedAttempt(username string) {
+	attempt, ok := a.failedAttempts[username]
+	if !ok {
+		attempt = &loginAttempt{}
+		a.failedAttempts[username] = attempt
+	}
+	attempt.count++
+	if attempt.count >= maxLoginAttempts {
+		attempt.lockUntil = time.Now().Add(lockoutDuration)
+		log.Printf("⚠️ Account %s locked for %v after %d failed attempts", username, lockoutDuration, maxLoginAttempts)
+	}
 }
 
 // Register adds a new user with hashed password. Returns error on failure.

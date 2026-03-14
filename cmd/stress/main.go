@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"distributed-chat/internal/protocol"
 	"flag"
 	"fmt"
 	"log"
 	"math/rand"
-	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -20,13 +22,21 @@ func main() {
 	flag.Parse()
 	fmt.Printf("Starting stress test with %d clients against %s...\n", *count, *serverAddr)
 
+	// Load CA cert for TLS
+	caCert, err := os.ReadFile("ca.crt")
+	if err != nil {
+		log.Fatalf("Failed to load CA cert: %v\nRun ./scripts/gen_certs.sh first!", err)
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
 	var wg sync.WaitGroup
 	wg.Add(*count)
 
 	for i := 0; i < *count; i++ {
 		go func(id int) {
 			defer wg.Done()
-			runClient(id)
+			runClient(id, caCertPool)
 		}(i)
 		time.Sleep(10 * time.Millisecond) // Stagger connections
 	}
@@ -35,48 +45,41 @@ func main() {
 	fmt.Println("Stress test completed.")
 }
 
-func runClient(id int) {
-	conn, err := net.Dial("tcp", *serverAddr)
+func runClient(id int, caPool *x509.CertPool) {
+	conf := &tls.Config{RootCAs: caPool}
+	conn, err := tls.Dial("tcp", *serverAddr, conf)
 	if err != nil {
 		log.Printf("[Client %d] Connection failed: %v", id, err)
 		return
 	}
 	defer conn.Close()
 
-	// Login
 	username := fmt.Sprintf("Bot-%d", id)
 
-	// For simplicity, let's assume we use the 'admin' user just to spam messages?
-	// Or we just send MsgTypeChat immediately?
-	// The server requires Auth now.
-	// So we must Login.
-	// Let's use "Bot" : "pass" and assume we registered them or just use "Alice" for all?
-	// Using "Alice" for everyone is fine for load testing, but might confuse presence.
-	// Let's Register on fly.
-
+	// Register
 	registerMsg := protocol.Message{
-		Type:    protocol.MsgTypeRegister,
-		Sender:  username,
-		Content: fmt.Sprintf("%s:pass", username),
+		Type:      protocol.MsgTypeRegister,
+		Sender:    username,
+		Content:   fmt.Sprintf("%s:pass1234", username),
+		Timestamp: time.Now(),
 	}
 	protocol.SendMessage(conn, registerMsg)
 
-	// Consume response
 	decoder := protocol.NewDecoder(conn)
 	decoder.Decode() // READ: OK_REGISTERED or FAIL_EXISTS
 
-	// Now Login
+	// Login
 	login := protocol.Message{
-		Type:    protocol.MsgTypeLogin,
-		Sender:  username,
-		Content: fmt.Sprintf("%s:pass", username),
+		Type:      protocol.MsgTypeLogin,
+		Sender:    username,
+		Content:   fmt.Sprintf("%s:pass1234", username),
+		Timestamp: time.Now(),
 	}
 	protocol.SendMessage(conn, login)
 	decoder.Decode() // READ: OK
 
-	// Start Chat loop
+	// Read loop to drain incoming messages
 	go func() {
-		// Read loop to drain buffer
 		for {
 			_, err := decoder.Decode()
 			if err != nil {
@@ -91,6 +94,7 @@ func runClient(id int) {
 			Type:      protocol.MsgTypeChat,
 			Sender:    username,
 			Content:   fmt.Sprintf("Load Test Message %d from %s", k, username),
+			Channel:   "general",
 			Timestamp: time.Now(),
 		}
 		if err := protocol.SendMessage(conn, msg); err != nil {

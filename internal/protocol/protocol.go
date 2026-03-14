@@ -84,9 +84,10 @@ type Decoder struct {
 }
 
 func NewDecoder(r io.Reader) *Decoder {
-	// Limit reads to prevent memory exhaustion from oversized payloads
-	limited := io.LimitReader(r, MaxMessageSize+4096) // buffer for JSON overhead
-	return &Decoder{dec: json.NewDecoder(limited)}
+	// Note: Don't use LimitReader here — it limits the ENTIRE stream, not per-message.
+	// On persistent connections, it silently kills the stream after the limit.
+	// Message size is enforced at the application layer (storage.Save, api.MaxBytesReader).
+	return &Decoder{dec: json.NewDecoder(r)}
 }
 
 func (d *Decoder) Decode() (*Message, error) {

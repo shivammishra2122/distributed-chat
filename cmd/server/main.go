@@ -84,8 +84,8 @@ func main() {
 	// Start SSH Server
 	go sshserver.StartServer(*sshPort, chatNode)
 
-	// Start REST API Server
-	apiServer := api.NewServer(chatNode, *apiPort)
+	// Start REST API Server (with HTTPS using same TLS certs)
+	apiServer := api.NewServer(chatNode, *apiPort, "server.crt", "server.key")
 	go apiServer.Start()
 
 	// Start Metrics Server
