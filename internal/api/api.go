@@ -28,7 +28,7 @@ func NewServer(n *node.Node, port int, certFile, keyFile string) *Server {
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
 		apiKey = protocol.GenerateID() + protocol.GenerateID() // 32 hex chars
-		log.Printf("⚠️  No API_KEY set. Generated ephemeral key: %s... (redacted)", apiKey[:4])
+		log.Printf("⚠️  No API_KEY set. Generated ephemeral API key (value printed to stderr).")
 		log.Printf("   Set API_KEY env var for persistent auth. Full key printed to stderr once.")
 		fmt.Fprintf(os.Stderr, "API_KEY=%s\n", apiKey)
 	}
